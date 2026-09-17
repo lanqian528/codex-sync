@@ -41,7 +41,7 @@ npx wrangler secret put CLOUD_CONFIG
 最后一个命令的交互输入粘贴完整单行 JSON，例如（请自行替换 Key）：
 
 ```json
-{"mode":"api","base_url":"https://api.lqshop.cc/v1","api_key":"REPLACE_WITH_REAL_KEY"}
+{"mode":"api","base_url":"https://api.example.com/v1","api_key":"REPLACE_WITH_REAL_KEY"}
 ```
 
 也可以在 Cloudflare Dashboard → Worker → Settings → Variables and Secrets 中设置上述三个 Secret。读取地址为 `https://codex-sync-config.<你的子域>.workers.dev/config.json`。只开放 GET，无写接口，不重定向；成功和错误均 `Cache-Control: no-store`。Workers 日志采集关闭，代码不记录请求、口令或 JSON。不要开启记录请求头/响应正文的外部日志规则。
@@ -66,8 +66,8 @@ python codex_sync.py watch
 
 ## 修改范围与安全边界
 
-- 首次接入只接受缺省 provider 或 `openai`，且 `lq_sync` 必须未占用。原 provider 记录仅保存一次，位于 Codex 目录的 `.codex-sync-state.json`，只含是否存在和原值。
-- API 模式只修改根表 `model_provider` 和 `model_providers.lq_sync`；Pro 模式恢复原根键并删除专用表。保留模型、MCP、其他表及注释，不恢复整份旧配置。不要在工具管理期间手工编辑专用表；冲突会停下。
+- 首次接入只接受缺省 provider 或 `openai`，且 `synced_api` 必须未占用。原 provider 记录仅保存一次，位于 Codex 目录的 `.codex-sync-state.json`，只含是否存在和原值。
+- API 模式只修改根表 `model_provider` 和 `model_providers.synced_api`；Pro 模式恢复原根键并删除专用表。保留模型、MCP、其他表及注释，不恢复整份旧配置。不要在工具管理期间手工编辑专用表；冲突会停下。
 - 按项目需求使用 `requires_openai_auth = true`，并设置 `experimental_bearer_token`。官方定义 true 表示 OpenAI 认证，并非通用 Bearer 开关；已测 Windows CLI 0.155.0-alpha.2.6 在这两个字段同时存在时优先使用直接 Bearer，未携带假 Pro token。其他版本必须重新运行请求测试，不能仅凭 TOML 可解析就认定安全。 Key 明文保存在 config.toml，官方更推荐 env_key；这里按桌面 App 免环境变量配置的需求选择直接 Bearer。
 - 不读取、复制、上传或写入真实 auth.json，不访问系统凭证库，不执行 login/logout。不会阻止 Codex 自身刷新凭证，也不能保证失效后永远免登录。
 - 每次重新获取并完整校验 JSON；只接受 HTTPS，无 URL 凭证、查询串或重定向；15 秒网络超时、64 KiB 响应上限。不继承代理环境变量。只写变化内容。

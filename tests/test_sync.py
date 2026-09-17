@@ -32,13 +32,13 @@ class SyncTests(unittest.TestCase):
         before = auth.stat().st_mtime_ns
         self.apply()
         doc = tomlkit.parse(self.path.read_text())
-        self.assertEqual(doc['model_provider'], 'lq_sync')
-        self.assertTrue(doc['model_providers']['lq_sync']['requires_openai_auth'])
+        self.assertEqual(doc['model_provider'], 'synced_api')
+        self.assertTrue(doc['model_providers']['synced_api']['requires_openai_auth'])
         self.write(self.path.read_text().replace('model = "test"', 'model = "edited"'))
         self.apply({**self.cloud, 'mode': 'pro'})
         text = self.path.read_text()
         self.assertNotIn('model_provider =', text)
-        self.assertNotIn('lq_sync', text)
+        self.assertNotIn('synced_api', text)
         self.assertIn('model = "edited" # keep model', text)
         self.assertIn('command = "demo" # keep mcp', text)
         self.assertEqual(auth.read_bytes(), b'FAKE-CREDENTIAL-SENTINEL')
@@ -69,7 +69,7 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(old, self.path.read_bytes())
 
     def test_conflicts(self):
-        for text in ['model_provider="other"', '[model_providers.lq_sync]\nname="lq"', '[profiles.x]\nmodel_provider="other"', 'bad = [']:
+        for text in ['model_provider="other"', '[model_providers.synced_api]\nname="Synced API"', '[profiles.x]\nmodel_provider="other"', 'bad = [']:
             self.write(text)
             with self.assertRaises(s.SafeError):
                 self.apply()

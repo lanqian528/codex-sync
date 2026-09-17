@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 import psutil
 import tomlkit
 
-PROVIDER = "lq_sync"
+PROVIDER = "synced_api"
 LIMIT = 65536
 
 
@@ -270,7 +270,7 @@ def apply(home, cloud, idle=ensure_idle):
         if PROVIDER in providers:
             table = providers[PROVIDER]
             expected_keys = {"name", "base_url", "wire_api", "requires_openai_auth", "experimental_bearer_token"}
-            if set(table) != expected_keys or table.get("name") != "lq" or table.get("wire_api") != "responses" or table.get("requires_openai_auth") != True:
+            if set(table) != expected_keys or table.get("name") != "Synced API" or table.get("wire_api") != "responses" or table.get("requires_openai_auth") != True:
                 raise SafeError("Dedicated provider table conflict; refusing changes.")
         if cloud["mode"] == "api":
             doc["model_provider"] = PROVIDER
@@ -279,7 +279,7 @@ def apply(home, cloud, idle=ensure_idle):
             if PROVIDER not in doc["model_providers"]:
                 doc["model_providers"][PROVIDER] = tomlkit.table()
             table = doc["model_providers"][PROVIDER]
-            for key, value in {"name": "lq", "base_url": cloud["base_url"], "wire_api": "responses", "requires_openai_auth": True, "experimental_bearer_token": cloud["api_key"]}.items():
+            for key, value in {"name": "Synced API", "base_url": cloud["base_url"], "wire_api": "responses", "requires_openai_auth": True, "experimental_bearer_token": cloud["api_key"]}.items():
                 table[key] = value
         else:
             if state["present"]:
