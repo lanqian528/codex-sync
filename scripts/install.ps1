@@ -7,15 +7,47 @@ $config = Join-Path $env:USERPROFILE '.config/codex-sync'
 function Protect-Path([string]$Path) {
     if ((Get-Item -LiteralPath $Path).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse paths unsupported' }
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-    $acl = Get-Acl -LiteralPath $Path
+    # Build a DACL-only descriptor. Reusing Get-Acl may carry audit/owner state
+    # and make Set-Acl request SeSecurityPrivilege during an ordinary upgrade.
+    $isDirectory = Test-Path -LiteralPath $Path -PathType Container
+    $acl = if ($isDirectory) { [Security.AccessControl.DirectorySecurity]::new() } else { [Security.AccessControl.FileSecurity]::new() }
     $acl.SetAccessRuleProtection($true, $false)
-    foreach ($rule in @($acl.Access)) { $acl.RemoveAccessRuleSpecific($rule) }
     $inherit = [Security.AccessControl.InheritanceFlags]::None
-    if (Test-Path -LiteralPath $Path -PathType Container) { $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' }
+    if ($isDirectory) { $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' }
     foreach ($principal in @($sid, [Security.Principal.SecurityIdentifier]'S-1-5-18')) {
         $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($principal, 'FullControl', $inherit, 'None', 'Allow'))
     }
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    if (-not ('CodexSync.NativePermissions' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+namespace CodexSync {
+  public static class NativePermissions {
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern uint SetNamedSecurityInfoW(string name, int type, uint flags,
+      IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool GetSecurityDescriptorDacl(IntPtr descriptor,
+      out bool present, out IntPtr dacl, out bool defaulted);
+    public static void SetDacl(string path, byte[] descriptor) {
+      var handle = GCHandle.Alloc(descriptor, GCHandleType.Pinned);
+      try {
+        bool present, defaulted; IntPtr dacl;
+        if (!GetSecurityDescriptorDacl(handle.AddrOfPinnedObject(), out present, out dacl, out defaulted))
+          throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (!present || dacl == IntPtr.Zero) throw new InvalidOperationException("Missing private DACL");
+        uint error = SetNamedSecurityInfoW(path, 1, 0x80000004u,
+          IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero);
+        if (error != 0) throw new Win32Exception((int)error);
+      } finally { handle.Free(); }
+    }
+  }
+}
+'@
+    }
+    [CodexSync.NativePermissions]::SetDacl($Path, $acl.GetSecurityDescriptorBinaryForm())
 }
 New-Item -ItemType Directory -Force -Path $dest,$config | Out-Null
 Protect-Path $dest
