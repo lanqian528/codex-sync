@@ -1,0 +1,6 @@
+{
+  "url": "https://codex-sync.YOUR_SUBDOMAIN.workers.dev/config.json",
+  "username": "reader",
+  "password": "REPLACE_WITH_SEPARATE_READ_PASSWORD",
+  "codex_home": "~/.codex"
+}

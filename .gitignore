@@ -1,0 +1,15 @@
+connection.json
+cloud.json
+.dev.vars
+.wrangler/
+__pycache__/
+build/
+dist/
+*.spec
+.venv/
+node_modules/
+.env
+.env.*
+auth.json
+config.toml
+*.log
