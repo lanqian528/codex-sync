@@ -142,10 +142,12 @@ cd worker && node --test
 
 可选真实 CLI 检查：`python tests/probe_cli.py /absolute/path/to/codex`。这个测试只创建临时目录和假登录数据，启动本机 HTTP 捕获服务，验证 API Bearer、Pro token 不外发和假 auth 文件不变。生产同步程序仍严格要求 HTTPS；测试不会访问第三方 API。测试会暂时启动 Codex，期间 watcher 暂缓是预期行为。
 
-已实际验证：Windows Python 3.11、14 项基本测试、4 项 Worker 测试；Windows `codex-cli 0.155.0-alpha.2.6` 在 requires_openai_auth=true 下真实发出的 API 请求使用假 API Key、未携带假 Pro token、未更改假登录数据。
+已实际验证：Windows Python 3.11、14 项基本测试、5 项云端测试（含 Vercel 适配）；Windows `codex-cli 0.155.0-alpha.2.6` 在 requires_openai_auth=true 下真实发出的 API 请求使用假 API Key、未携带假 Pro token、未更改假登录数据。GitHub Actions 的 Windows x64、Linux x64/ARM64 已通过测试、打包及成品断网保护测试；从 Release 下载的 Windows 成品另行通过 SHA-256 和断网不改配置验证。
 
 尚未验证：桌面 App 新会话端到端切换、真实第三方 API/模型响应、Windows 登录后任务启动、Linux 实机开机与桌面环境、macOS。GitHub Actions 测试和打包结果以对应运行记录为准，不能将编译通过视为上述兼容性验证通过。
 
 推送 main / PR 自动测试和打包；推送 `v*` tag 会在全部平台通过后创建 GitHub Release 并附带 ZIP 和 SHA-256。Actions 不需要任何业务秘密，使用内置 GITHUB_TOKEN 上传发布资产。不要上传 connection.json、cloud.json、auth.json、真实 config.toml 或任何个人配置。
 
 官方依据：[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)、[认证](https://learn.chatgpt.com/docs/auth)、[Cloudflare Worker Secrets](https://developers.cloudflare.com/workers/configuration/secrets/)。
+
+Vercel 依据：[Node.js Functions](https://vercel.com/docs/functions/runtimes/node-js)、[环境变量](https://vercel.com/docs/environment-variables)。

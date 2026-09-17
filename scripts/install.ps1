@@ -43,7 +43,7 @@ try {
     $connection = Join-Path $config 'connection.json'
     if (-not (Test-Path -LiteralPath $connection)) {
         Write-Host 'First confirm Pro works; exit Codex before synchronization.'
-        $url = Read-Host 'Worker HTTPS URL'
+        $url = Read-Host 'Cloud HTTPS URL (Vercel or Cloudflare)'
         $username = Read-Host 'Read username'
         $secure = Read-Host 'Read password' -AsSecureString
         $codexDir = Read-Host 'Codex directory (blank = CODEX_HOME or ~/.codex)'

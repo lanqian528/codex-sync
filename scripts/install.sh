@@ -31,7 +31,7 @@ install -m 700 "$binary" "$dest/codex-sync.new"
 mv -f "$dest/codex-sync.new" "$dest/codex-sync"
 if [[ ! -e "$config/connection.json" ]]; then
   echo 'First confirm Pro works. Exit Codex before the first sync.'
-  read -r -p 'Worker HTTPS URL: ' url </dev/tty
+  read -r -p 'Cloud HTTPS URL (Vercel or Cloudflare): ' url </dev/tty
   read -r -p 'Read username: ' username </dev/tty
   read -r -s -p 'Read password: ' password </dev/tty; echo
   read -r -p "Codex directory [${CODEX_HOME:-$HOME/.codex}]: " codex_dir </dev/tty
