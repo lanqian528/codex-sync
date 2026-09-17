@@ -30,3 +30,11 @@ with tempfile.TemporaryDirectory(prefix='codex-sync-binary-') as directory:
     assert s.snapshot(config) == connection_before
     assert s.snapshot(target) == before
     print('Frozen config command: failed verification preserves connection and Codex files.')
+    for args in [[], ['status']]:
+        status = subprocess.run([str(Path(sys.argv[1]).resolve()), *args], env=dict(os.environ,CODEX_SYNC_CONFIG=str(config)), capture_output=True, text=True, encoding='utf-8', timeout=25)
+        assert status.returncode == 0, status.stderr
+        assert '客户端状态' in status.stdout
+        assert 'fake-read-password' not in status.stdout + status.stderr
+        assert s.snapshot(config) == connection_before
+        assert s.snapshot(target) == before
+    print('Frozen entrypoint: no-argument and status commands are read-only and redact credentials.')

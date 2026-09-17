@@ -57,6 +57,31 @@ WantedBy=default.target
 EOF
 systemctl --user daemon-reload
 systemctl --user enable --now codex-sync.service
+command_dir="$HOME/.local/bin"
+mkdir -p "$command_dir"
+[[ ! -L "$command_dir" ]] || { echo 'Symlink command directory unsupported'; exit 1; }
+if [[ -e "$command_dir/codex-sync" || -L "$command_dir/codex-sync" ]]; then
+  [[ -L "$command_dir/codex-sync" && "$(readlink "$command_dir/codex-sync")" == "$dest/codex-sync" ]] || { echo 'An unrelated codex-sync command already exists; refusing to replace it.'; exit 1; }
+else
+  ln -s "$dest/codex-sync" "$command_dir/codex-sync"
+fi
+login_shell="${SHELL:-/bin/bash}"
+case "${login_shell##*/}" in
+  zsh) shell_profile="$HOME/.zshrc";;
+  bash|sh|dash|'') shell_profile="$HOME/.bashrc";;
+  *) shell_profile=''; echo 'Add ~/.local/bin to PATH in your shell configuration.';;
+esac
+for profile in "$HOME/.profile" "$shell_profile"; do
+  [[ -n "$profile" ]] || continue
+  [[ ! -L "$profile" ]] || { echo "Cannot edit symlink profile: $profile; add ~/.local/bin to PATH manually."; continue; }
+  if ! grep -Fq '# codex-sync user command' "$profile" 2>/dev/null; then
+    cat >> "$profile" <<'EOF'
+
+# codex-sync user command
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH";; esac
+EOF
+  fi
+done
 echo 'Installed. Check: journalctl --user -u codex-sync -n 20'
-echo "Edit connection settings: $dest/codex-sync config"
+echo 'Open a new terminal and run codex-sync for the status and control menu.'
 echo 'For start at boot before login: sudo loginctl enable-linger "$USER"'

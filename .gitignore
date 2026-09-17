@@ -16,3 +16,7 @@ config.toml
 .vercel/
 
 .env*
+*.status.json
+*.watch.json
+*.watch.lock
+.codex-sync*.lock

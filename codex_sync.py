@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -361,7 +362,40 @@ def read_connection(path, allow_missing=False, check_url=True):
     return c, previous
 
 
+def runtime_path(suffix="status"):
+    path = connection_path()
+    return path.with_name(path.stem + "." + suffix + ".json")
+
+
+def record_runtime(message, mode=None):
+    """Best-effort local diagnostics. Never records credentials or raw exceptions."""
+    path = runtime_path()
+    try:
+        private(path.parent)
+        if not path.parent.is_dir():
+            return
+        private(path)
+        data = {"checked_at": time.time(), "message": message, "cloud_mode": mode}
+        atomic_write(path, json.dumps(data).encode(), snapshot(path))
+    except Exception:
+        pass  # A status-file failure cannot undo or mask a completed sync.
+
+
 def sync():
+    mode = None
+    try:
+        result, mode = sync_once()
+        record_runtime(result, mode)
+        return result
+    except SafeError as error:
+        record_runtime(str(error), getattr(error, "cloud_mode", None))
+        raise
+    except Exception:
+        record_runtime("Operation failed safely; existing configuration retained.")
+        raise
+
+
+def sync_once():
     path = connection_path()
     private(path.parent)
     if not path.parent.is_dir():
@@ -370,7 +404,247 @@ def sync():
     with lock(path.parent, ".codex-sync-connection.lock"):
         c, _ = read_connection(path)
         home = c.get("codex_home") or os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
-        return apply(home, fetch(c))
+        cloud = fetch(c)
+        try:
+            return apply(home, cloud), cloud["mode"]
+        except SafeError as error:
+            error.cloud_mode = cloud["mode"]
+            raise
+
+
+@contextlib.contextmanager
+def watch_guard():
+    directory = connection_path().parent
+    private(directory)
+    if not directory.is_dir():
+        raise SafeError("Run codex-sync config before starting watch.")
+    with lock(directory, connection_path().stem + ".watch.lock"):
+        path = runtime_path("watch")
+        private(path)
+        identity = json.dumps({"pid": os.getpid(), "created_at": psutil.Process().create_time()}).encode()
+        atomic_write(path, identity, snapshot(path))
+        try:
+            yield
+        finally:
+            try:
+                if snapshot(path)[0] == identity:
+                    path.unlink()
+            except Exception:
+                pass
+
+
+def installed_binary():
+    if os.name == "nt":
+        return Path(os.environ["LOCALAPPDATA"]) / "codex-sync" / "codex-sync.exe"
+    return Path.home() / ".local" / "share" / "codex-sync" / "codex-sync"
+
+
+def watcher_process():
+    """Validate identity before ever stopping a process; never targets Codex."""
+    path = runtime_path("watch")
+    private(path)
+    raw, _ = snapshot(path)
+    if raw is None:
+        return None
+    identity = parse_json(raw)
+    if not isinstance(identity, dict) or type(identity.get("pid")) is not int or not isinstance(identity.get("created_at"), (int, float)):
+        raise SafeError("Cannot confirm the monitor process identity.")
+    try:
+        process = psutil.Process(identity["pid"])
+        if abs(process.create_time() - identity["created_at"]) > 0.01 or process.username() != psutil.Process().username():
+            return None
+        args = process.cmdline()
+        if "watch" not in args[1:]:
+            return None
+        executable = Path(process.exe()).resolve()
+        allowed = {installed_binary().resolve()}
+        if getattr(sys, "frozen", False):
+            allowed.add(Path(sys.executable).resolve())
+        if executable in allowed:
+            return process
+        if not getattr(sys, "frozen", False) and executable == Path(sys.executable).resolve():
+            cwd = Path(process.cwd())
+            if any((cwd / arg).resolve() == Path(__file__).resolve() for arg in args[1:] if not arg.startswith("-")):
+                return process
+        return None
+    except psutil.NoSuchProcess:
+        return None
+    except (psutil.AccessDenied, OSError):
+        raise SafeError("Cannot confirm the monitor process identity.") from None
+
+
+WINDOWS_SERVICE_SCRIPT = r'''
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+try {
+    $job = Get-ScheduledTask -TaskName CodexSync -ErrorAction SilentlyContinue
+    if (-not $job) { @{installed=$false;running=$false;enabled=$false} | ConvertTo-Json -Compress; exit 0 }
+    $launcher = Join-Path $env:LOCALAPPDATA 'codex-sync\watch.vbs'
+    $hostExe = Join-Path $env:WINDIR 'System32\wscript.exe'
+    if (@($job.Actions).Count -ne 1 -or $job.Actions[0].Execute -ine $hostExe -or $job.Actions[0].Arguments.Trim() -ine ('"' + $launcher + '"')) {
+        throw 'Unexpected task action'
+    }
+    if ($env:CODEX_SYNC_SERVICE_ACTION -eq 'start') {
+        Enable-ScheduledTask -TaskName CodexSync | Out-Null
+        Start-ScheduledTask -TaskName CodexSync
+    } elseif ($env:CODEX_SYNC_SERVICE_ACTION -eq 'stop') {
+        Disable-ScheduledTask -TaskName CodexSync | Out-Null
+        Stop-ScheduledTask -TaskName CodexSync
+    }
+    $job = Get-ScheduledTask -TaskName CodexSync
+    @{installed=$true;running=($job.State -eq 'Running');enabled=([string]$job.State -ne 'Disabled')} | ConvertTo-Json -Compress
+} catch {
+    Write-Output '{"error":"service_unavailable"}'
+    exit 1
+}
+'''
+
+
+def service_call(action="status"):
+    if action not in ("status", "start", "stop"):
+        raise SafeError("Invalid monitor action.")
+    default = (Path.home() / ".config" / "codex-sync" / "connection.json").absolute()
+    if os.path.normcase(str(connection_path())) != os.path.normcase(str(default)):
+        raise SafeError("Background service controls require the default connection file.")
+    kwargs = {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace", "timeout": 15}
+    try:
+        if os.name == "nt":
+            powershell = str(Path(os.environ["WINDIR"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+            result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", WINDOWS_SERVICE_SCRIPT],
+                                    env=dict(os.environ, CODEX_SYNC_SERVICE_ACTION=action),
+                                    creationflags=subprocess.CREATE_NO_WINDOW, **kwargs)
+            if result.returncode:
+                raise SafeError("Cannot manage the installed monitor task.")
+            state = parse_json(result.stdout)
+            if not isinstance(state, dict) or set(state) != {"installed", "running", "enabled"} or any(type(v) is not bool for v in state.values()):
+                raise SafeError("Cannot read the installed monitor task status.")
+            return state
+        if sys.platform.startswith("linux"):
+            unit = Path.home() / ".config" / "systemd" / "user" / "codex-sync.service"
+            no_links(unit)
+            if not unit.is_file():
+                return {"installed": False, "running": False, "enabled": False}
+            if action != "status":
+                # Scope service actions to the unit generated by our installer.
+                expected = 'ExecStart="{}" watch'.format(installed_binary())
+                if expected not in unit.read_text():
+                    raise SafeError("Unexpected monitor service definition; refusing changes.")
+                verb = "enable" if action == "start" else "disable"
+                result = subprocess.run(["systemctl", "--user", verb, "--now", "codex-sync.service"], **kwargs)
+                if result.returncode:
+                    raise SafeError("Cannot manage the installed monitor service.")
+            result = subprocess.run(["systemctl", "--user", "show", "codex-sync.service", "--property=LoadState,ActiveState,UnitFileState", "--no-pager"], **kwargs)
+            if result.returncode:
+                raise SafeError("Cannot read the installed monitor service status.")
+            fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+            return {"installed": fields.get("LoadState") == "loaded", "running": fields.get("ActiveState") in ("active", "activating"), "enabled": fields.get("UnitFileState") in ("enabled", "enabled-runtime")}
+        raise SafeError("Background service controls are supported on Windows and Linux.")
+    except SafeError:
+        raise
+    except Exception:
+        raise SafeError("Background service is unavailable; no Codex settings were changed.") from None
+
+
+def control_monitor(action):
+    state = service_call("status")
+    if not state["installed"]:
+        raise SafeError("Monitor service is not installed; run the installation script first.")
+    if action == "start":
+        read_connection(connection_path())
+    identity = watcher_process() if action == "stop" else None
+    result = service_call(action)
+    if action == "stop" and identity is not None:
+        # Task Scheduler may stop WScript but leave its console child alive.
+        current = watcher_process()
+        if current is not None and current.pid == identity.pid:
+            try:
+                current.terminate()
+                current.wait(timeout=3)
+            except psutil.NoSuchProcess:
+                pass
+            except psutil.TimeoutExpired:
+                current.kill()
+                current.wait(timeout=3)
+    return "已请求启动后台监控，自启动已开启。" if action == "start" else "后台监控已停止，自启动已关闭。"
+
+
+def show_status():
+    print("\nCodex Sync · 客户端状态", flush=True)
+    try:
+        state = service_call()
+        process = watcher_process()
+        running = state["running"] or process is not None
+        print("监控服务：" + ("运行中" if running else "已停止" if state["installed"] else "未安装"))
+        print("开机/登录自启动：" + ("已开启" if state["enabled"] else "已关闭"))
+    except Exception:
+        print("监控服务：状态无法确认（自定义配置请自行管理对应进程）")
+    try:
+        connection, _ = read_connection(connection_path())
+        print("云端地址：" + cloud_url(connection["url"]))
+        home = Path(connection.get("codex_home") or os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")).expanduser().absolute()
+        print("Codex 目录：" + str(home))
+        config = home / "config.toml"
+        private(config)
+        raw, _ = snapshot(config)
+        provider = tomlkit.parse((raw or b"").decode()).get("model_provider", "openai")
+        label = "Pro / OpenAI" if provider == "openai" else "第三方 API" if provider == PROVIDER else "其他 provider"
+        print("本地用户配置：" + label)
+    except Exception:
+        print("本地连接或 provider：未配置或无法读取，请选择修改配置。")
+    try:
+        path = runtime_path()
+        private(path)
+        raw, _ = snapshot(path)
+        if raw is None:
+            raise ValueError()
+        status = parse_json(raw)
+        checked = float(status["checked_at"])
+        if not 0 < checked <= time.time() + 60:
+            raise ValueError()
+        print("最近检查：" + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(checked)))
+        mode = status.get("cloud_mode")
+        print("上次云端模式：" + ({"pro": "Pro", "api": "API"}.get(mode, "未能读取")))
+        descriptions = {
+            "unchanged": "配置已一致，无需修改。",
+            "updated; reopen Codex and start a new session": "配置已更新，请重新打开 Codex 并使用新会话。",
+            "Codex is running; waiting until it exits.": "等待 Codex 退出，暂缓写入。",
+            "Cannot confirm Codex process state; deferred.": "无法确认 Codex 进程状态，暂缓写入。",
+            "Cloud fetch failed; existing configuration retained.": "云端连接失败，保留原配置。",
+        }
+        print("同步结果：" + descriptions.get(status.get("message"), "同步未完成；运行 codex-sync sync 可查看具体原因。"))
+        if time.time() - checked > 150:
+            print("提示：以上是历史记录，超过 150 秒未刷新。")
+    except Exception:
+        print("最近检查：暂无记录。")
+    print("状态仅反映后台监控和用户配置，运行中的 Codex 会话不一定已切换。")
+
+
+def terminal_menu():
+    while True:
+        show_status()
+        if not sys.stdin.isatty():
+            return 0
+        print("\n1. 启动监控（开启自启动）\n2. 停止监控（关闭自启动）\n3. 修改连接配置\n4. 同步一次\n5. 刷新状态\n0. 退出菜单（后台继续运行）")
+        try:
+            choice = input("请选择 [0-5]：").strip()
+            if choice in ("0", "q", "quit", "exit"):
+                return 0
+            if choice == "1":
+                print(control_monitor("start"))
+            elif choice == "2":
+                print(control_monitor("stop"))
+            elif choice == "3":
+                print(configure(argparse.Namespace(url=None, codex_home=None, set_key=False)))
+            elif choice == "4":
+                print(sync())
+            elif choice not in ("", "5"):
+                print("请输入 0 到 5。")
+        except EOFError:
+            return 0
+        except SafeError as error:
+            print(str(error))
+        except Exception:
+            print("操作未完成，原配置保留。")
 
 
 def secret_input(prompt):
@@ -441,19 +715,42 @@ def configure(args):
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("sync", "watch", "config"))
+    parser.add_argument("command", nargs="?", choices=("sync", "watch", "config", "status", "start", "stop"), help="省略时打开状态和操作菜单")
     parser.add_argument("--url", help="config: homepage, domain, or full config URL")
     parser.add_argument("--codex-home", help="config: change the Codex directory")
     parser.add_argument("--set-key", action="store_true", help="config: securely prompt for a new access key")
     args = parser.parse_args()
     if args.command != "config" and (args.url is not None or args.codex_home is not None or args.set_key):
         parser.error("configuration options require the config command")
+    if args.command is None:
+        return terminal_menu()
+    if args.command == "status":
+        show_status()
+        return 0
+    guard = watch_guard() if args.command == "watch" else contextlib.nullcontext()
+    try:
+        with guard:
+            return command_loop(args)
+    except SafeError as error:
+        print(str(error), flush=True)
+        return 1
+
+
+def command_loop(args):
     last = None
     while True:
         code = 0
         try:
-            message = configure(args) if args.command == "config" else sync()
+            if args.command == "config":
+                message = configure(args)
+            elif args.command in ("start", "stop"):
+                message = control_monitor(args.command)
+            else:
+                message = sync()
         except SafeError as exc:
             code, message = 1, str(exc)
         except Exception:

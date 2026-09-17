@@ -3,8 +3,10 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import contextlib
+import io
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import tomlkit
 import codex_sync as s
@@ -282,6 +284,98 @@ class SyncTests(unittest.TestCase):
         with patch.object(s,'connection_path',return_value=path), patch.object(s,'secret_input',return_value=c['access_key']), patch.object(s,'fetch',return_value=self.cloud):
             s.configure(self.options(url='https://example.com'))
         self.assertEqual(json.loads(path.read_text())['url'],'https://example.com/config.json')
+
+    def test_watch_guard_prevents_duplicate_and_cleans_identity(self):
+        path,_=self.connection()
+        with patch.object(s,'connection_path',return_value=path):
+            with s.watch_guard():
+                self.assertEqual(json.loads(s.runtime_path('watch').read_text())['pid'],os.getpid())
+                with self.assertRaises(s.SafeError):
+                    with s.watch_guard():
+                        pass
+            self.assertFalse(s.runtime_path('watch').exists())
+
+    def test_status_is_read_only_and_never_shows_keys(self):
+        path,c=self.connection()
+        self.write('model_provider="synced_api"\n[model_providers.synced_api]\nexperimental_bearer_token="FAKE-API-SECRET"\n')
+        before=s.snapshot(self.path)
+        output=io.StringIO()
+        with patch.object(s,'connection_path',return_value=path), patch.object(s,'service_call',return_value={'installed':True,'running':True,'enabled':True}), patch.object(s,'watcher_process',return_value=None), patch.object(s,'fetch') as fetch:
+            s.record_runtime('Codex is running; waiting until it exits.','api')
+            with contextlib.redirect_stdout(output):
+                s.show_status()
+            fetch.assert_not_called()
+        text=output.getvalue()
+        self.assertIn('运行中',text)
+        self.assertIn('等待 Codex 退出',text)
+        self.assertIn('第三方 API',text)
+        self.assertNotIn(c['access_key'],text)
+        self.assertNotIn('FAKE-API-SECRET',text)
+        self.assertEqual(before,s.snapshot(self.path))
+
+    def test_menu_dispatches_start_stop_config_without_stopping_on_exit(self):
+        output=io.StringIO()
+        with patch.object(s.sys.stdin,'isatty',return_value=True), patch('builtins.input',side_effect=['1','2','3','4','5','0']), patch.object(s,'show_status'), patch.object(s,'control_monitor',return_value='ok') as control, patch.object(s,'configure',return_value='ok') as configure, patch.object(s,'sync',return_value='ok') as sync, contextlib.redirect_stdout(output):
+            self.assertEqual(s.terminal_menu(),0)
+        self.assertEqual([call.args for call in control.call_args_list],[('start',),('stop',)])
+        configure.assert_called_once()
+        sync.assert_called_once()
+
+    def test_menu_without_terminal_only_shows_status(self):
+        with patch.object(s.sys.stdin,'isatty',return_value=False), patch.object(s,'show_status') as status, patch('builtins.input') as input:
+            self.assertEqual(s.terminal_menu(),0)
+            status.assert_called_once()
+            input.assert_not_called()
+
+    def test_service_controls_reject_custom_connection(self):
+        path,_=self.connection()
+        with patch.object(s,'connection_path',return_value=path), patch.object(s.subprocess,'run') as run:
+            with self.assertRaises(s.SafeError):
+                s.service_call('stop')
+            run.assert_not_called()
+
+    def test_stop_terminates_only_verified_watcher(self):
+        process=Mock(pid=12345)
+        with patch.object(s,'service_call',return_value={'installed':True,'running':False,'enabled':False}) as control, patch.object(s,'watcher_process',return_value=process):
+            self.assertIn('自启动已关闭',s.control_monitor('stop'))
+        self.assertEqual([call.args for call in control.call_args_list],[('status',),('stop',)])
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once()
+
+    def test_watcher_identity_cannot_target_codex_or_reused_pid(self):
+        path,_=self.connection()
+        process=Mock()
+        process.create_time.return_value=123.0
+        process.username.return_value='test-user'
+        process.cmdline.return_value=['codex.exe','watch']
+        process.exe.return_value=str(self.home/'codex.exe')
+        with patch.object(s,'connection_path',return_value=path), patch.object(s.psutil,'Process',return_value=process):
+            identity=s.runtime_path('watch')
+            identity.write_text(json.dumps({'pid':12345,'created_at':123.0}))
+            s.restrict(identity)
+            self.assertIsNone(s.watcher_process())
+            process.create_time.return_value=456.0
+            self.assertIsNone(s.watcher_process())
+
+    @unittest.skipUnless(os.name == 'nt','Windows service adapter')
+    def test_windows_service_adapter_is_hidden_and_uses_task_scope(self):
+        default=s.Path.home()/'.config'/'codex-sync'/'connection.json'
+        result=SimpleNamespace(returncode=0,stdout='{"installed":true,"running":true,"enabled":true}')
+        with patch.object(s,'connection_path',return_value=default), patch.object(s.subprocess,'run',return_value=result) as run:
+            self.assertTrue(s.service_call('start')['running'])
+        self.assertEqual(run.call_args.kwargs['creationflags'],s.subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(run.call_args.kwargs['env']['CODEX_SYNC_SERVICE_ACTION'],'start')
+        self.assertIn('Unexpected task action',run.call_args.args[0][-1])
+
+    @unittest.skipUnless(s.sys.platform.startswith('linux'),'Linux service adapter')
+    def test_linux_stop_disables_autostart(self):
+        unit=self.home/'.config'/'systemd'/'user'/'codex-sync.service'
+        unit.parent.mkdir(parents=True)
+        unit.write_text('ExecStart="'+str(self.home/'.local'/'share'/'codex-sync'/'codex-sync')+'" watch\n')
+        responses=[SimpleNamespace(returncode=0,stdout=''),SimpleNamespace(returncode=0,stdout='LoadState=loaded\nActiveState=inactive\nUnitFileState=disabled\n')]
+        with patch.object(s.Path,'home',return_value=self.home), patch.dict(s.os.environ,{'CODEX_SYNC_CONFIG':str(self.home/'.config'/'codex-sync'/'connection.json')}), patch.object(s.subprocess,'run',side_effect=responses) as run:
+            self.assertFalse(s.service_call('stop')['enabled'])
+        self.assertEqual(run.call_args_list[0].args[0],['systemctl','--user','disable','--now','codex-sync.service'])
 
 
 if __name__ == '__main__':

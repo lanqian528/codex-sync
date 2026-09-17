@@ -70,7 +70,15 @@ try {
     $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName 'CodexSync' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
     Start-ScheduledTask -TaskName 'CodexSync'
-    Write-Host "Installed, hidden at login. Edit connection settings: & '$dest\codex-sync.exe' config"
+    # Persist for future terminals and update this terminal when installed via iex.
+    $userCommandPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $userEntries = @($userCommandPath -split ';' | Where-Object { $_ })
+    if (-not ($userEntries | Where-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') -ieq $dest.TrimEnd('\') })) {
+        [Environment]::SetEnvironmentVariable('Path', (($userEntries + $dest) -join ';'), 'User')
+    }
+    if (-not (($env:Path -split ';') | Where-Object { $_.TrimEnd('\') -ieq $dest.TrimEnd('\') })) { $env:Path += ";$dest" }
+    Write-Host 'Installed. Run codex-sync to view status and manage the monitor.'
+    Write-Host 'Other already-open terminals may need to be reopened to load the updated PATH.'
 } finally {
     # Only remove the verified temporary child created in this installer.
     $resolved = [IO.Path]::GetFullPath($tmp)

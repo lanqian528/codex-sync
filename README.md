@@ -2,7 +2,7 @@
 
 个人使用的 Codex 多设备 provider 同步工具。一个带密钥登录的管理页、一份私有 JSON、一个本地 Python 脚本。支持 **Vercel + Private Blob** 和 **Cloudflare Workers + R2**。
 
-没有设备注册、状态上报、账号池、额度检测或请求转发。客户端提供 `sync` / `watch` / `config`。管理页可切换 Pro / API、更新 API 地址和 Key；保存后生效，无需重新部署。
+没有设备注册、状态上报、账号池、额度检测或请求转发。安装后直接输入 **`codex-sync`**，即可查看状态并选择启动、停止或修改配置。管理页可切换 Pro / API、更新 API 地址和 Key；保存后生效，无需重新部署。
 
 ## 认证与存储
 
@@ -78,9 +78,47 @@ bash <(curl --proto '=https' -fsSL https://raw.githubusercontent.com/lanqian528/
 
 安装脚本会收紧连接目录、Codex 目录和 config.toml 的权限；不递归处理登录文件。Windows 登录后使用隐藏窗口计划任务运行，Linux 使用用户级 systemd。Linux 服务器希望重启后、未登录也运行时：`sudo loginctl enable-linger "$USER"`。
 
+Windows 安装器将程序目录加入用户 PATH，并更新执行安装的 PowerShell 窗口。Linux 创建 `~/.local/bin/codex-sync` 命令，并为 Bash/Zsh 配置 PATH。其他已经打开的终端可能需要关闭后重新打开。特殊 shell 或符号链接管理的 shell 配置文件需要自行把 `~/.local/bin` 加入 PATH。
+
 可重复执行安装脚本更新，**已有连接文件不会被覆盖**。Linux 可设置 `CODEX_SYNC_REPO=owner/repo`、`CODEX_SYNC_VERSION=v0.3.0`；Windows 下载脚本后传 `-Repo owner/repo -Version v0.3.0`。不会自动下载程序更新。
 
-## 本地配置与三个命令
+## 终端菜单与状态
+
+安装完成后，在终端运行：
+
+```bash
+codex-sync
+```
+
+先显示后台运行状态、自启动状态、连接地址、本地用户配置中的 provider、最近检查时间及结果，再显示菜单：
+
+```text
+1. 启动监控（开启自启动）
+2. 停止监控（关闭自启动）
+3. 修改连接配置
+4. 同步一次
+5. 刷新状态
+0. 退出菜单（后台继续运行）
+```
+
+“启动”启用系统自启动并启动后台监控；“停止”停用自启动并停止监控，不关闭 Codex，也不切换 provider。退出菜单或按 Ctrl+C 只退出当前菜单。模式切换仍遵循“Codex 退出后才写配置”的保护。
+
+状态页仅只读查看本地信息，不主动写 Codex 配置、不显示密钥。云端模式与同步结果来自后台上次检查，在连接目录的私有 `connection.status.json` 中记录，不上传。时间超过 150 秒会标为历史记录。进程身份记录位于 `connection.watch.json`，核对 PID、启动时间、用户、程序路径和 watch 参数后才允许结束进程，避免误杀 Codex。一个连接文件只允许一个 watch 实例。
+
+也支持直接命令：
+
+```bash
+codex-sync status   # 只查看状态
+codex-sync start    # 启动监控并开启自启动
+codex-sync stop     # 停止监控并关闭自启动
+codex-sync config  # 修改连接信息
+codex-sync sync    # 同步一次
+codex-sync watch   # 当前终端前台监控，Ctrl+C 结束
+```
+
+后台启停管理支持 Windows / Linux 的默认安装服务。使用自定义 CODEX_SYNC_CONFIG 或 macOS 时，请自行管理对应的 watch 进程或系统服务，程序不会误操作默认服务。
+
+## 本地连接配置
 
 连接文件默认 `~/.config/codex-sync/connection.json`，可通过 `CODEX_SYNC_CONFIG` 指定其他文件：
 
@@ -101,7 +139,7 @@ python codex_sync.py watch
 python codex_sync.py config
 ```
 
-发布成品为 `codex-sync sync` / `codex-sync watch` / `codex-sync config`，Windows 文件名带 `.exe`。watch 每轮结束后等待 60 秒；网络超时为 15 秒。
+发布成品的 Windows 文件名带 `.exe`，加入 PATH 后可省略扩展名。watch 每轮结束后等待 60 秒；网络超时为 15 秒。
 
 ### 自动识别网址
 
@@ -114,13 +152,13 @@ python codex_sync.py config
 Windows：
 
 ```powershell
-& "$env:LOCALAPPDATA\codex-sync\codex-sync.exe" config
+codex-sync config
 ```
 
 Linux：
 
 ```bash
-~/.local/share/codex-sync/codex-sync config
+codex-sync config
 ```
 
 交互修改网址、ACCESS_KEY、Codex 目录，直接按 Enter 保留原值。密钥输入隐藏，绝不显示旧密钥，也不提供把密钥写进命令参数的选项。
