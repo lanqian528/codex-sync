@@ -49,7 +49,7 @@ def main():
         auth.write_text(json.dumps(fake_auth))
         s.restrict(auth)
         auth_before = auth.read_bytes()
-        s.apply(home, {'mode':'api','base_url':'https://example.invalid/v1','api_key':'FAKE-API-KEY-EXPECTED'}, idle=lambda:None)
+        s.apply(home, {'mode':'api','base_url':'https://example.invalid/v1','api_key':'FAKE-API-KEY-EXPECTED'})
         config = home / 'config.toml'
         config.write_text(config.read_text().replace('https://example.invalid/v1', f'http://127.0.0.1:{server.server_port}/v1'))
         with (home / 'cli-output.txt').open('wb') as output:

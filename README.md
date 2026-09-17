@@ -60,7 +60,7 @@ npx wrangler deploy
 
 ## 一行安装客户端
 
-**首次接入前确认本机 Pro 正常。退出 Codex → 同步 → 重新打开并用新会话验证。**不会实时切换运行中的任务。
+**首次接入前确认本机 Pro 正常。同步会直接更新配置文件，无需先退出 Codex；之后重新打开 Codex 并用新会话验证。**程序不会主动关闭或重启 Codex，也不强制切换当前会话。
 
 Windows x64，普通 PowerShell：
 
@@ -101,7 +101,7 @@ codex-sync
 0. 退出菜单（后台继续运行）
 ```
 
-“启动”启用系统自启动并启动后台监控；“停止”停用自启动并停止监控，不关闭 Codex，也不切换 provider。退出菜单或按 Ctrl+C 只退出当前菜单。模式切换仍遵循“Codex 退出后才写配置”的保护。
+“启动”启用系统自启动并启动后台监控；“停止”停用自启动并停止监控，不关闭 Codex，也不切换 provider。退出菜单或按 Ctrl+C 只退出当前菜单。监控会直接更新配置文件，不再等待 Codex 退出；运行中会话是否重新加载由 Codex 自身决定。
 
 状态页仅只读查看本地信息，不主动写 Codex 配置、不显示密钥。云端模式与同步结果来自后台上次检查，在连接目录的私有 `connection.status.json` 中记录，不上传。时间超过 150 秒会标为历史记录。进程身份记录位于 `connection.watch.json`，核对 PID、启动时间、用户、程序路径和 watch 参数后才允许结束进程，避免误杀 Codex。一个连接文件只允许一个 watch 实例。
 
@@ -173,7 +173,7 @@ codex-sync config --set-key
 
 先验证目录、权限及云端认证读取，再原子保存。失败时保留原连接；修改网址跨到另一个域名时，需要重新输入该域名的访问密钥，不自动发送原密钥。正在运行的 watch 会在下一轮读取新连接，无需重启监控。
 
-`config` 不修改 Codex 的 config.toml，也不要求退出 Codex；它管理本机连接信息。云端 mode、API 地址和第三方 API Key 在管理页修改。实际 provider 切换仍需等待 Codex 退出。首次从源码使用时，先按下方说明设置 Codex 目录及 config.toml 权限。
+`config` 不修改 Codex 的 config.toml，也不要求退出 Codex；它管理本机连接信息。云端 mode、API 地址和第三方 API Key 在管理页修改。sync/watch 会直接写入 provider 配置文件，不以 Codex 是否运行作为写入条件。首次从源码使用时，先按下方说明设置 Codex 目录及 config.toml 权限。
 
 **从 v0.2.x 升级**：将连接文件的 `username` / `password` 替换为 `access_key`，不要同时配置两种认证。旧版客户端也可以手工设置 `username: "sync"`、`password: "与 ACCESS_KEY 相同的值"` 过渡使用；原 READ_USERNAME / READ_PASSWORD 已停用，不能绕过 ACCESS_KEY。此前保存在 CLOUD_CONFIG 中的配置可作为初始值，管理页面第一次保存后进入私有存储。
 
@@ -187,7 +187,7 @@ Linux / macOS：连接目录和 Codex 目录权限 700；连接文件和 config.
 - 不读取、上传、复制或改写真实 auth.json，不访问系统凭证库，不执行 login/logout。不阻止 Codex 自身刷新，也不保证失效凭证永远免登录。
 - HTTPS、不跟随云端重定向、不继承代理环境、限制响应大小。出错不打印异常原文、密钥或配置；只输出固定状态。没有状态上报。
 - 同目录私有临时文件、内容校验、原子替换、本地互斥锁和外部修改检查；配置未变化不写入。符号链接、重解析点和硬链接不支持。
-- sync/watch 都检查当前用户 Codex App / CLI / 相关后台；忙碌或状态不明则等待，不关闭或重启 Codex。简单进程检查不能识别任意改名的程序，也不能绝对排除检查后启动的竞态。
+- sync/watch 不检查 Codex 是否运行；拉取与校验成功后直接更新配置文件，不主动关闭或重启 Codex。仍检测写入前的外部文件修改并在冲突时停止本轮。psutil 仅用于管理同步器自身的后台进程。
 - profile provider 覆盖、目录内策略文件会阻止同步。项目配置、启动参数和系统管理策略仍可能覆盖它；工具不强行更改这些配置。
 
 ## 后台管理与平台支持

@@ -240,40 +240,13 @@ def fetch(connection):
         raise SafeError("Cloud fetch failed; existing configuration retained.") from None
 
 
-def ensure_idle():
-    try:
-        me = psutil.Process().username()
-        for proc in psutil.process_iter():
-            try:
-                if proc.pid == os.getpid():
-                    continue
-                name = proc.name().lower()
-                # Native Codex App, CLI, helpers/backends. Node wrappers checked below.
-                candidate = "codex" in name and not name.startswith(("codex-sync", "codex_sync"))
-                if not candidate and name not in ("node", "node.exe", "electron", "electron.exe"):
-                    continue
-                if proc.username() != me:
-                    continue
-                if candidate or any(re.search(r"(^|[/\\@])codex([/\\.\s-]|$)", arg, re.I) for arg in proc.cmdline()):
-                    raise SafeError("Codex is running; waiting until it exits.")
-            except psutil.NoSuchProcess:
-                continue
-            except psutil.AccessDenied:
-                raise SafeError("Cannot confirm Codex process state; deferred.") from None
-    except SafeError:
-        raise
-    except Exception:
-        raise SafeError("Cannot confirm Codex process state; deferred.") from None
-
-
-def apply(home, cloud, idle=ensure_idle):
+def apply(home, cloud):
     validate_cloud(cloud)
     home = Path(home).expanduser().absolute()
     private(home)
     if not home.is_dir():
         raise SafeError("Codex directory must already exist; initialize Pro first.")
     with lock(home):
-        idle()
         path = home / "config.toml"
         state_path = home / ".codex-sync-state.json"
         private(path)
@@ -328,10 +301,10 @@ def apply(home, cloud, idle=ensure_idle):
         if state_snapshot[0] is None:
             if snapshot(path) != original:
                 raise SafeError("File changed externally; deferred.")
-            atomic_write(state_path, json.dumps(state).encode(), state_snapshot, idle)
+            atomic_write(state_path, json.dumps(state).encode(), state_snapshot)
         if output == old:
             return "unchanged"
-        atomic_write(path, output, original, idle)
+        atomic_write(path, output, original)
         return "updated; reopen Codex and start a new session"
 
 
@@ -607,8 +580,8 @@ def show_status():
         descriptions = {
             "unchanged": "配置已一致，无需修改。",
             "updated; reopen Codex and start a new session": "配置已更新，请重新打开 Codex 并使用新会话。",
-            "Codex is running; waiting until it exits.": "等待 Codex 退出，暂缓写入。",
-            "Cannot confirm Codex process state; deferred.": "无法确认 Codex 进程状态，暂缓写入。",
+            "Codex is running; waiting until it exits.": "这是旧版的等待记录；新版同步会直接更新配置文件。",
+            "Cannot confirm Codex process state; deferred.": "这是旧版的进程检查记录；新版同步不再等待进程退出。",
             "Cloud fetch failed; existing configuration retained.": "云端连接失败，保留原配置。",
         }
         print("同步结果：" + descriptions.get(status.get("message"), "同步未完成；运行 codex-sync sync 可查看具体原因。"))

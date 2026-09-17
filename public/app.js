@@ -69,7 +69,7 @@ $('config-form').addEventListener('submit', async event => {
   try {
     const result = await request('/api/admin', { method: 'PUT', headers: { 'X-Config-Revision': revision }, body: JSON.stringify(data) });
     render(result.data);
-    message('配置已保存。设备将在下一轮空闲同步时跟随；请重新打开 Codex 并使用新会话。');
+    message('配置已保存。设备将在下一轮同步时更新本地配置；请重新打开 Codex 并使用新会话验证。');
   } catch (error) { message(error.message === 'Failed to fetch' ? '未能确认保存结果。请重新读取云端配置后再试。' : error.message, true); }
   finally { saving = false; $('save').textContent = '保存配置 ↗'; updateState(); }
 });

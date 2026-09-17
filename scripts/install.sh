@@ -30,7 +30,7 @@ systemctl --user stop codex-sync.service 2>/dev/null || true
 install -m 700 "$binary" "$dest/codex-sync.new"
 mv -f "$dest/codex-sync.new" "$dest/codex-sync"
 if [[ ! -e "$config/connection.json" ]]; then
-  echo 'First confirm Pro works. Exit Codex before the first sync.'
+  echo 'First confirm Pro works. Configuration will be updated directly; reopen Codex afterward to verify.'
   read -r -p "Codex directory [${CODEX_HOME:-$HOME/.codex}]: " codex_dir </dev/tty
   codex_dir="${codex_dir:-${CODEX_HOME:-$HOME/.codex}}"
   [[ -d "$codex_dir" && ! -L "$codex_dir" && ! -L "$codex_dir/config.toml" ]] || { echo 'Initialize Pro in a normal directory first'; exit 1; }

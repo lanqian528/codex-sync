@@ -27,7 +27,7 @@ class SyncTests(unittest.TestCase):
         s.restrict(self.path)
 
     def apply(self, cloud=None):
-        return s.apply(self.home, cloud or self.cloud, idle=lambda: None)
+        return s.apply(self.home, cloud or self.cloud)
 
     def test_roundtrip_keeps_unrelated_edits_and_auth(self):
         auth = self.home / 'auth.json'
@@ -78,14 +78,14 @@ class SyncTests(unittest.TestCase):
                 self.apply()
             self.assertEqual(text, self.path.read_text())
 
-    def test_busy_no_state_created(self):
-        old = self.path.read_bytes()
-        def busy():
-            raise s.SafeError('busy')
-        with self.assertRaises(s.SafeError):
-            s.apply(self.home, self.cloud, idle=busy)
-        self.assertEqual(old, self.path.read_bytes())
-        self.assertFalse((self.home / '.codex-sync-state.json').exists())
+    def test_running_codex_does_not_block_writing(self):
+        codex = Mock()
+        codex.name.return_value = 'codex.exe'
+        with patch.object(s.psutil, 'process_iter', return_value=[codex]) as processes:
+            self.apply()
+            processes.assert_not_called()
+        self.assertEqual(tomlkit.parse(self.path.read_text())['model_provider'], 'synced_api')
+        self.assertTrue((self.home / '.codex-sync-state.json').exists())
 
     def test_external_edit_detected(self):
         expected = s.snapshot(self.path)
@@ -148,10 +148,11 @@ class SyncTests(unittest.TestCase):
                 with s.lock(self.home):
                     pass
 
-    def test_unknown_process_status_deferred(self):
-        with patch.object(s.psutil, 'process_iter', side_effect=RuntimeError()):
-            with self.assertRaises(s.SafeError):
-                s.ensure_idle()
+    def test_unavailable_process_inventory_does_not_block_writing(self):
+        with patch.object(s.psutil, 'process_iter', side_effect=RuntimeError()) as processes:
+            self.apply()
+            processes.assert_not_called()
+        self.assertEqual(tomlkit.parse(self.path.read_text())['model_provider'], 'synced_api')
 
     def test_state_saved_once(self):
         self.apply()
@@ -234,7 +235,7 @@ class SyncTests(unittest.TestCase):
     def test_config_key_change_does_not_need_sync(self):
         path, c = self.connection()
         key='replacement-access-key-for-tests-123456789'
-        with patch.object(s, 'connection_path', return_value=path), patch.object(s, 'secret_input', return_value=key), patch.object(s, 'fetch', return_value=self.cloud), patch.object(s, 'ensure_idle', side_effect=AssertionError('Should not inspect Codex')):
+        with patch.object(s, 'connection_path', return_value=path), patch.object(s, 'secret_input', return_value=key), patch.object(s, 'fetch', return_value=self.cloud), patch.object(s.psutil, 'process_iter', side_effect=AssertionError('Should not inspect Codex')):
             s.configure(self.options(set_key=True))
         self.assertEqual(json.loads(path.read_text())['access_key'], key)
 
@@ -301,13 +302,13 @@ class SyncTests(unittest.TestCase):
         before=s.snapshot(self.path)
         output=io.StringIO()
         with patch.object(s,'connection_path',return_value=path), patch.object(s,'service_call',return_value={'installed':True,'running':True,'enabled':True}), patch.object(s,'watcher_process',return_value=None), patch.object(s,'fetch') as fetch:
-            s.record_runtime('Codex is running; waiting until it exits.','api')
+            s.record_runtime('updated; reopen Codex and start a new session','api')
             with contextlib.redirect_stdout(output):
                 s.show_status()
             fetch.assert_not_called()
         text=output.getvalue()
         self.assertIn('运行中',text)
-        self.assertIn('等待 Codex 退出',text)
+        self.assertIn('配置已更新',text)
         self.assertIn('第三方 API',text)
         self.assertNotIn(c['access_key'],text)
         self.assertNotIn('FAKE-API-SECRET',text)

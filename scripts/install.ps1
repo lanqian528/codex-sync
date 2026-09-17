@@ -74,7 +74,7 @@ try {
     Copy-Item -LiteralPath $binary -Destination (Join-Path $dest 'codex-sync.exe') -Force
     $connection = Join-Path $config 'connection.json'
     if (-not (Test-Path -LiteralPath $connection)) {
-        Write-Host 'First confirm Pro works; exit Codex before synchronization.'
+        Write-Host 'First confirm Pro works. Configuration will be updated directly; reopen Codex afterward to verify.'
         $codexDir = Read-Host 'Codex directory (blank = CODEX_HOME or ~/.codex)'
         if (-not $codexDir) { $codexDir = $env:CODEX_HOME }
         if (-not $codexDir) { $codexDir = Join-Path $env:USERPROFILE '.codex' }
