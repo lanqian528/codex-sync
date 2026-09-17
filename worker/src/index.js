@@ -8,7 +8,9 @@ export const headers = {
 const COOKIE = '__Host-codex_sync';
 const SESSION_SECONDS = 3600;
 const encoder = new TextEncoder();
-export class Conflict extends Error {}
+export class Conflict extends Error {
+  constructor(stage = 'storage') { super('Configuration conflict'); this.stage = stage; }
+}
 class Invalid extends Error {}
 function reply(status, data, extra = {}) {
   return new Response(JSON.stringify(data), { status, headers: { ...headers, ...extra } });
@@ -144,24 +146,29 @@ export default {
       }
       if (request.method === 'GET') {
         const { config, etag } = await readConfig(env, store);
-        return reply(200, { mode: config.mode, base_url: config.base_url, has_api_key: Boolean(config.api_key), storage_ready: Boolean(store) }, { ETag: etag });
+        // Vercel can remove ETag response headers. Carry the storage token in
+        // authenticated JSON; this adds no field to the saved config.json.
+        return reply(200, { mode: config.mode, base_url: config.base_url, has_api_key: Boolean(config.api_key), storage_ready: Boolean(store), revision: etag });
       }
       if (request.method === 'PUT') {
         if (!store) return fail(503, 'Connect private storage before saving');
-        const expected = request.headers.get('if-match');
-        if (!expected) return fail(428, 'Reload configuration before saving');
+        const expected = request.headers.get('x-config-revision') || request.headers.get('if-match');
+        if (!expected || expected === 'null' || expected === 'undefined') return fail(428, 'Refresh the page and reload configuration before saving');
         const input = await body(request);
         if (!Object.hasOwn(input, 'mode') || !Object.hasOwn(input, 'base_url') || Object.keys(input).some(k => !['mode', 'base_url', 'api_key'].includes(k))) throw new Invalid();
         const previous = await readConfig(env, store);
-        if (expected !== previous.etag) throw new Conflict();
+        if (expected !== previous.etag) throw new Conflict('read');
         const config = validate({ ...previous.config, ...input });
         const etag = await store.write(config, expected);
-        return reply(200, { mode: config.mode, base_url: config.base_url, has_api_key: Boolean(config.api_key), storage_ready: true }, { ETag: etag });
+        return reply(200, { mode: config.mode, base_url: config.base_url, has_api_key: Boolean(config.api_key), storage_ready: true, revision: etag });
       }
       return fail(405, 'Method not allowed');
     } catch (error) {
       if (error instanceof Invalid) return fail(400, 'Invalid input: check mode, HTTPS URL and API key');
-      if (error instanceof Conflict) return fail(409, 'Configuration changed elsewhere; reload before saving');
+      if (error instanceof Conflict) {
+        console.warn(JSON.stringify({ event: 'config_write_conflict', stage: error.stage === 'read' ? 'read' : 'storage' }));
+        return fail(409, 'Configuration changed elsewhere; reload before saving');
+      }
       return fail(503, 'Configuration storage unavailable; no successful save confirmed');
     }
   },

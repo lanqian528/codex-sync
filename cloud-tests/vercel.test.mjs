@@ -19,7 +19,7 @@ test('Vercel routes forward bodies, cookies, auth and conditional writes', async
   try{
     const login=await session.fetch(req('/api/session','POST',{access_key:key},{Origin:'https://example.vercel.app'}));
     assert.equal(login.status,200);assert.match(login.headers.get('set-cookie'),/HttpOnly/);
-    const res=await admin.fetch(req('/api/admin','PUT',{mode:'api',base_url:'https://api.example.com/v1',api_key:'fake-key'},{'If-Match':'initial'}));
+    const res=await admin.fetch(req('/api/admin','PUT',{mode:'api',base_url:'https://api.example.com/v1',api_key:'fake-key'},{'X-Config-Revision':'initial'}));
     assert.equal(res.status,200);
     const read=await endpoint.fetch(req('/config.json'));
     assert.equal((await read.json()).api_key,'fake-key');assert.match(read.headers.get('Vercel-CDN-Cache-Control'),/no-store/);

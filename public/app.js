@@ -1,17 +1,17 @@
 const $ = id => document.getElementById(id);
-let csrf = '', etag = '', saved = null, saving = false;
+let csrf = '', revision = '', saved = null, saving = false;
 const errors = {
   400: '配置格式不正确，请检查 HTTPS 地址、模式和 API Key。',
   401: '访问密钥不正确，或登录已过期。',
   403: '安全校验未通过，请刷新页面后重新登录。',
   409: '配置已在其他页面修改。请重新读取后再保存。',
-  428: '请先重新读取云端配置。',
+  428: '页面版本或配置标识已失效，请刷新页面后重新读取配置。',
   503: '服务暂不可用。请确认 ACCESS_KEY 已设置、私有存储已连接，再重试。',
 };
 function message(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); $('message').hidden = false; }
 function clearMessage() { $('message').hidden = true; }
 function loggedOut() {
-  csrf = ''; etag = ''; saved = null;
+  csrf = ''; revision = ''; saved = null;
   $('api-key').value = ''; $('base-url').value = ''; $('access-key').value = '';
   $('access-key').type = 'password'; $('show-access').textContent = '显示';
   $('dashboard').hidden = true; $('login-view').hidden = false;
@@ -22,18 +22,19 @@ async function request(path, options = {}) {
     if (res.status === 401) loggedOut();
     throw Error(errors[res.status] || '操作未完成，请稍后重试。');
   }
-  return { data: await res.json(), etag: res.headers.get('etag') };
+  return { data: await res.json() };
 }
 function currentMode() { return document.querySelector('input[name=mode]:checked').value; }
 function changed() { return saved && (currentMode() !== saved.mode || $('base-url').value !== saved.base_url || $('api-key').value !== ''); }
 function updateState() {
   const dirty = changed();
-  $('save').disabled = !dirty || saving || !saved?.storage_ready;
+  $('save').disabled = !dirty || saving || !saved?.storage_ready || !revision;
   $('change-label').textContent = dirty ? '有更改待保存' : '与云端配置一致';
   $('saved-badge').textContent = dirty ? '待保存' : '已读取';
 }
-function render(data, newEtag) {
-  saved = data; etag = newEtag;
+function render(data) {
+  if (typeof data.revision !== 'string' || !data.revision) throw Error('未读取到有效配置标识，请刷新页面后重试。');
+  saved = data; revision = data.revision;
   document.querySelector(`input[name=mode][value="${data.mode === 'api' ? 'api' : 'pro'}"]`).checked = true;
   $('base-url').value = data.base_url;
   $('api-key').value = ''; $('api-key').type = 'password'; $('show-api').textContent = '显示';
@@ -45,7 +46,7 @@ function render(data, newEtag) {
 }
 async function load() {
   const result = await request('/api/admin');
-  render(result.data, result.etag);
+  render(result.data);
 }
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault(); clearMessage(); $('login-button').disabled = true;
@@ -66,8 +67,8 @@ $('config-form').addEventListener('submit', async event => {
   if (!data.base_url.startsWith('https://')) { message('API 地址必须使用 HTTPS。', true); return; }
   saving = true; $('save').textContent = '正在保存…'; updateState();
   try {
-    const result = await request('/api/admin', { method: 'PUT', headers: { 'If-Match': etag }, body: JSON.stringify(data) });
-    render(result.data, result.etag);
+    const result = await request('/api/admin', { method: 'PUT', headers: { 'X-Config-Revision': revision }, body: JSON.stringify(data) });
+    render(result.data);
     message('配置已保存。设备将在下一轮空闲同步时跟随；请重新打开 Codex 并使用新会话。');
   } catch (error) { message(error.message === 'Failed to fetch' ? '未能确认保存结果。请重新读取云端配置后再试。' : error.message, true); }
   finally { saving = false; $('save').textContent = '保存配置 ↗'; updateState(); }
