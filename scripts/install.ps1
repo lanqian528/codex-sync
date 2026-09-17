@@ -36,6 +36,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Binary check failed' }
     $task = Get-ScheduledTask -TaskName 'CodexSync' -ErrorAction SilentlyContinue
     if ($task) { Stop-ScheduledTask -TaskName 'CodexSync'; Start-Sleep -Seconds 2 }
+    # Task Scheduler may leave the hidden child alive. Match our exact install path only.
+    $installedExe = Join-Path $dest 'codex-sync.exe'
+    Get-CimInstance Win32_Process -Filter "Name = 'codex-sync.exe'" | Where-Object { $_.ExecutablePath -eq $installedExe } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Copy-Item -LiteralPath $binary -Destination (Join-Path $dest 'codex-sync.exe') -Force
     $connection = Join-Path $config 'connection.json'
     if (-not (Test-Path -LiteralPath $connection)) {

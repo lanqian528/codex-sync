@@ -31,6 +31,7 @@ jobs:
         working-directory: worker
       - run: python -m PyInstaller --clean --noconfirm --onefile --name codex-sync codex_sync.py
       - run: ./dist/${{ matrix.binary }} --help
+      - run: python tests/probe_binary.py ./dist/${{ matrix.binary }}
       - name: Package
         shell: python
         run: |
