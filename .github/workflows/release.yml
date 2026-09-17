@@ -27,8 +27,7 @@ jobs:
           node-version: '22'
       - run: python -m pip install -r requirements.txt pyinstaller==6.16.0
       - run: python -m unittest discover -s tests -v
-      - run: node --test
-        working-directory: worker
+      - run: npm test
       - run: python -m PyInstaller --clean --noconfirm --onefile --name codex-sync codex_sync.py
       - run: ./dist/${{ matrix.binary }} --help
       - run: python tests/probe_binary.py ./dist/${{ matrix.binary }}

@@ -1,0 +1,11 @@
+*
+!api
+!api/**
+!worker
+!worker/src
+!worker/src/**
+!worker/package.json
+!package.json
+!vercel.json
+!public
+!public/**

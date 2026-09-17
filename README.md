@@ -24,7 +24,30 @@ Windows 注册当前用户登录时运行的 `CodexSync` 计划任务，无命�
 
 安装器可重复用于更新。自定义仓库/版本：Linux 设置 `CODEX_SYNC_REPO=owner/repo` 和 `CODEX_SYNC_VERSION=v0.1.0`；Windows 下载脚本后传 `-Repo owner/repo -Version v0.1.0`。不自动下载软件更新。
 
-## Cloudflare Worker
+## 云端：Vercel（默认）或 Cloudflare
+
+两个平台使用相同的 JSON 和 Basic Auth，客户端只需更换 URL。域名是否在所在网络可达需要实测，不保证任一平台的默认域名在所有地区可用。
+
+### Vercel
+
+将此 GitHub 仓库导入 Vercel，Framework Preset 选 **Other**、Root Directory 保持仓库根目录。无需数据库或前端。也可在根目录运行：
+
+```bash
+npx vercel login
+npx vercel link
+npx vercel env add READ_USERNAME production
+npx vercel env add READ_PASSWORD production
+npx vercel env add CLOUD_CONFIG production
+npx vercel --prod
+```
+
+在交互输入中设置独立读取用户名、口令，以及完整 JSON；不要把值写进命令参数。环境变量也可以在 Vercel 项目 Settings → Environment Variables 设置，生产环境中的口令和 JSON 标记为 Sensitive。不要使用 `NEXT_PUBLIC_` 前缀。
+
+生产 URL：`https://<项目生产域名>/config.json`。首次未配置时返回 503，不泄漏数据。未授权时返回 401。成功、认证失败、配置错误均不缓存，显式禁止 Vercel CDN 缓存。使用稳定的生产域名；Preview 的平台登录保护可能阻止客户端读取，不要把需要 Vercel 登录的预览链接填进客户端。
+
+每次更新 `CLOUD_CONFIG`（包括只切 mode）后必须 **重新部署到 Production** 才会生效。旧部署快照保留旧环境变量；轮换凭据时请按平台方式移除旧部署，避免旧部署 URL 长期使用旧口令。程序不读取 Vercel 账号 token，Vercel 管理权限只用于部署。
+
+### Cloudflare Worker（可选）
 
 云端使用 Worker secrets 保存一个完整 JSON，读取口令另外保存，不需要 KV。Cloudflare 账号管理员可以更新秘密；公开仓库、客户端源码中不保存真实值。这里替代了原方案的 SSH 文件编辑。
 

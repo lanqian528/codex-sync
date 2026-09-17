@@ -13,3 +13,4 @@ node_modules/
 auth.json
 config.toml
 *.log
+.vercel/
