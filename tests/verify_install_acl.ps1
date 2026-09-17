@@ -7,6 +7,9 @@ $definition=$ast.Find({param($node) $node -is [System.Management.Automation.Lang
 if (-not $definition) { throw 'Permission function missing' }
 # Evaluate only this project's permission function, not the installer actions.
 Invoke-Expression $definition.Extent.Text
+$binaryInstaller=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Install-ClientBinary'},$true)
+if (-not $binaryInstaller) { throw 'Binary installation function missing' }
+Invoke-Expression $binaryInstaller.Extent.Text
 $temporaryBase=[IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $temporaryRoot=Join-Path $temporaryBase ('codex-sync-acl-'+[Guid]::NewGuid().ToString('N'))
 try {
@@ -26,6 +29,17 @@ try {
         }
     }
     Write-Output 'Fresh install and repeated ACL protection passed without administrator privileges.'
+    $source=Join-Path $temporaryRoot 'new.bin'
+    $destination=Join-Path $temporaryRoot 'installed.bin'
+    [IO.File]::WriteAllText($source,'new-version')
+    [IO.File]::WriteAllText($destination,'old-version')
+    $held=[IO.File]::Open($destination,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    $failed=$false
+    try { Install-ClientBinary $source $destination } catch { $failed=$true } finally { $held.Dispose() }
+    if (-not $failed -or [IO.File]::ReadAllText($destination) -ne 'old-version') { throw 'A blocked update changed the existing binary' }
+    Install-ClientBinary $source $destination
+    if ([IO.File]::ReadAllText($destination) -ne 'new-version') { throw 'Atomic binary replacement failed' }
+    Write-Output 'Blocked upgrades preserve the old binary; replacement succeeds after the handle is released.'
 } finally {
     $resolved=[IO.Path]::GetFullPath($temporaryRoot)
     if ($resolved.StartsWith($temporaryBase.TrimEnd('\')+'\')) { Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue }

@@ -49,11 +49,34 @@ namespace CodexSync {
     }
     [CodexSync.NativePermissions]::SetDacl($Path, $acl.GetSecurityDescriptorBinaryForm())
 }
+function Install-ClientBinary([string]$Source, [string]$Destination) {
+    $staged = $Destination + '.new.' + [Guid]::NewGuid().ToString('N')
+    try {
+        Copy-Item -LiteralPath $Source -Destination $staged
+        for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            try {
+                if (Test-Path -LiteralPath $Destination) {
+                    [IO.File]::Replace($staged, $Destination, [NullString]::Value)
+                } else {
+                    [IO.File]::Move($staged, $Destination)
+                }
+                return
+            } catch [IO.IOException] {
+                if ($attempt -eq 29) { throw }
+                Start-Sleep -Milliseconds 250
+            }
+        }
+    } finally {
+        if (Test-Path -LiteralPath $staged) { Remove-Item -LiteralPath $staged -Force }
+    }
+}
 New-Item -ItemType Directory -Force -Path $dest,$config | Out-Null
 Protect-Path $dest
 Protect-Path $config
 $tmp = Join-Path $dest ([Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp | Out-Null
+$resumeOnFailure = $false
+$installationComplete = $false
 try {
     $base = "https://github.com/$Repo/releases/latest/download"
     if ($Version -ne 'latest') { $base = "https://github.com/$Repo/releases/download/$Version" }
@@ -67,11 +90,18 @@ try {
     & $binary --help | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Binary check failed' }
     $task = Get-ScheduledTask -TaskName 'CodexSync' -ErrorAction SilentlyContinue
+    $resumeOnFailure = $task -and $task.State -eq 'Running'
     if ($task) { Stop-ScheduledTask -TaskName 'CodexSync'; Start-Sleep -Seconds 2 }
     # Task Scheduler may leave the hidden child alive. Match our exact install path only.
     $installedExe = Join-Path $dest 'codex-sync.exe'
-    Get-CimInstance Win32_Process -Filter "Name = 'codex-sync.exe'" | Where-Object { $_.ExecutablePath -eq $installedExe } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Copy-Item -LiteralPath $binary -Destination (Join-Path $dest 'codex-sync.exe') -Force
+    Get-CimInstance Win32_Process -Filter "Name = 'codex-sync.exe'" | Where-Object { $_.ExecutablePath -eq $installedExe } | ForEach-Object {
+        $runningClient = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
+        if ($runningClient -and $runningClient.Path -eq $installedExe) {
+            Stop-Process -InputObject $runningClient -Force -ErrorAction SilentlyContinue
+            $null = $runningClient.WaitForExit(5000)
+        }
+    }
+    Install-ClientBinary $binary $installedExe
     $connection = Join-Path $config 'connection.json'
     if (-not (Test-Path -LiteralPath $connection)) {
         Write-Host 'First confirm Pro works. Configuration will be updated directly; reopen Codex afterward to verify.'
@@ -102,6 +132,7 @@ try {
     $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName 'CodexSync' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
     Start-ScheduledTask -TaskName 'CodexSync'
+    $installationComplete = $true
     # Persist for future terminals and update this terminal when installed via iex.
     $userCommandPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $userEntries = @($userCommandPath -split ';' | Where-Object { $_ })
@@ -112,6 +143,7 @@ try {
     Write-Host 'Installed. Run codex-sync to view status and manage the monitor.'
     Write-Host 'Other already-open terminals may need to be reopened to load the updated PATH.'
 } finally {
+    if (-not $installationComplete -and $resumeOnFailure) { Start-ScheduledTask -TaskName 'CodexSync' -ErrorAction SilentlyContinue }
     # Only remove the verified temporary child created in this installer.
     $resolved = [IO.Path]::GetFullPath($tmp)
     if ($resolved.StartsWith([IO.Path]::GetFullPath($dest) + [IO.Path]::DirectorySeparatorChar)) { Remove-Item -LiteralPath $resolved -Recurse -Force }
