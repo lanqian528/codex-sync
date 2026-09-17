@@ -23,3 +23,10 @@ with tempfile.TemporaryDirectory(prefix='codex-sync-binary-') as directory:
     assert result.stdout.strip() == 'Cloud fetch failed; existing configuration retained.', result.stdout
     assert s.snapshot(target) == before
     print('Frozen binary: dependencies load, offline error is redacted, config unchanged.')
+    connection_before = s.snapshot(config)
+    configured = subprocess.run([str(Path(sys.argv[1]).resolve()), 'config', '--url', 'https://127.0.0.1:1'], env=dict(os.environ,CODEX_SYNC_CONFIG=str(config)), capture_output=True, text=True, timeout=25)
+    assert configured.returncode == 1
+    assert configured.stdout.strip() == 'Cloud fetch failed; existing configuration retained.', configured.stdout
+    assert s.snapshot(config) == connection_before
+    assert s.snapshot(target) == before
+    print('Frozen config command: failed verification preserves connection and Codex files.')

@@ -2,7 +2,7 @@
 
 个人使用的 Codex 多设备 provider 同步工具。一个带密钥登录的管理页、一份私有 JSON、一个本地 Python 脚本。支持 **Vercel + Private Blob** 和 **Cloudflare Workers + R2**。
 
-没有设备注册、状态上报、账号池、额度检测或请求转发。客户端只有 `sync` / `watch`。管理页可切换 Pro / API、更新 API 地址和 Key；保存后生效，无需重新部署。
+没有设备注册、状态上报、账号池、额度检测或请求转发。客户端提供 `sync` / `watch` / `config`。管理页可切换 Pro / API、更新 API 地址和 Key；保存后生效，无需重新部署。
 
 ## 认证与存储
 
@@ -74,13 +74,13 @@ Linux x64 / ARM64：
 bash <(curl --proto '=https' -fsSL https://raw.githubusercontent.com/lanqian528/codex-sync/main/scripts/install.sh)
 ```
 
-首次询问云端 URL、ACCESS_KEY、Codex 目录，校验 Release SHA-256 并设置后台自启动。不需要在客户端另外填写第三方 API Key。Linux 需要 systemd、curl、unzip；首次生成连接 JSON 还需 python3。SHA-256 用于下载完整性检查，不是独立发布签名。
+首次询问 Codex 目录、云端网址和 ACCESS_KEY，认证读取验证通过后才保存连接并启用后台自启动。可直接填写域名或管理首页，不必手工补 `/config.json`。不需要在客户端另外填写第三方 API Key。Linux 需要 systemd、curl、unzip，成品安装不需要 Python。SHA-256 用于下载完整性检查，不是独立发布签名。
 
 安装脚本会收紧连接目录、Codex 目录和 config.toml 的权限；不递归处理登录文件。Windows 登录后使用隐藏窗口计划任务运行，Linux 使用用户级 systemd。Linux 服务器希望重启后、未登录也运行时：`sudo loginctl enable-linger "$USER"`。
 
 可重复执行安装脚本更新，**已有连接文件不会被覆盖**。Linux 可设置 `CODEX_SYNC_REPO=owner/repo`、`CODEX_SYNC_VERSION=v0.3.0`；Windows 下载脚本后传 `-Repo owner/repo -Version v0.3.0`。不会自动下载程序更新。
 
-## 本地配置与两个命令
+## 本地配置与三个命令
 
 连接文件默认 `~/.config/codex-sync/connection.json`，可通过 `CODEX_SYNC_CONFIG` 指定其他文件：
 
@@ -98,9 +98,44 @@ bash <(curl --proto '=https' -fsSL https://raw.githubusercontent.com/lanqian528/
 python -m pip install -r requirements.txt
 python codex_sync.py sync
 python codex_sync.py watch
+python codex_sync.py config
 ```
 
-发布成品为 `codex-sync sync` / `codex-sync watch`，Windows 文件名带 `.exe`。watch 每轮结束后等待 60 秒；网络超时为 15 秒。
+发布成品为 `codex-sync sync` / `codex-sync watch` / `codex-sync config`，Windows 文件名带 `.exe`。watch 每轮结束后等待 60 秒；网络超时为 15 秒。
+
+### 自动识别网址
+
+域名 `example.vercel.app`、首页 `https://example.vercel.app/`、`https://example.vercel.app/index.html` 都会识别为 `https://example.vercel.app/config.json`。Vercel、Cloudflare 和自定义域名适用同一规则。
+
+完整的 `/config.json`、`/api/config` 或自定义配置文件路径保持不变。不会自动扫描其他路径或跟随重定向；显式 HTTP 地址、含用户名/口令/查询参数的 URL 会拒绝。已有连接文件即使填了首页，升级后的 sync/watch 也能识别，无需先改文件。
+
+### 修改客户端连接信息
+
+Windows：
+
+```powershell
+& "$env:LOCALAPPDATA\codex-sync\codex-sync.exe" config
+```
+
+Linux：
+
+```bash
+~/.local/share/codex-sync/codex-sync config
+```
+
+交互修改网址、ACCESS_KEY、Codex 目录，直接按 Enter 保留原值。密钥输入隐藏，绝不显示旧密钥，也不提供把密钥写进命令参数的选项。
+
+只修改一项也可以（以下省略程序的完整路径）：
+
+```bash
+codex-sync config --url https://YOUR_PROJECT.vercel.app
+codex-sync config --codex-home /absolute/path/to/.codex
+codex-sync config --set-key
+```
+
+先验证目录、权限及云端认证读取，再原子保存。失败时保留原连接；修改网址跨到另一个域名时，需要重新输入该域名的访问密钥，不自动发送原密钥。正在运行的 watch 会在下一轮读取新连接，无需重启监控。
+
+`config` 不修改 Codex 的 config.toml，也不要求退出 Codex；它管理本机连接信息。云端 mode、API 地址和第三方 API Key 在管理页修改。实际 provider 切换仍需等待 Codex 退出。首次从源码使用时，先按下方说明设置 Codex 目录及 config.toml 权限。
 
 **从 v0.2.x 升级**：将连接文件的 `username` / `password` 替换为 `access_key`，不要同时配置两种认证。旧版客户端也可以手工设置 `username: "sync"`、`password: "与 ACCESS_KEY 相同的值"` 过渡使用；原 READ_USERNAME / READ_PASSWORD 已停用，不能绕过 ACCESS_KEY。此前保存在 CLOUD_CONFIG 中的配置可作为初始值，管理页面第一次保存后进入私有存储。
 

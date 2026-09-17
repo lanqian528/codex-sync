@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import tomlkit
@@ -157,6 +158,130 @@ class SyncTests(unittest.TestCase):
         self.apply({**self.cloud, 'mode': 'pro'})
         self.apply()
         self.assertEqual(before, s.snapshot(path))
+
+    def test_cloud_homepage_recognition_and_custom_paths(self):
+        for given in ['example.com', ' https://example.com/ ', 'https://example.com/index.html', '//example.com']:
+            self.assertEqual(s.cloud_url(given), 'https://example.com/config.json')
+        for given in ['https://example.com/config.json', 'https://example.com/api/config', 'https://example.com/custom/settings.json']:
+            self.assertEqual(s.cloud_url(given), given)
+        for given in ['http://example.com', 'https://user:secret@example.com', 'https://example.com?key=secret', 'https://example.com/#fragment', '', 'https://example.com\\evil']:
+            with self.assertRaises(s.SafeError):
+                s.cloud_url(given)
+
+    def connection(self):
+        path = self.home / 'connection.json'
+        c = {'url':'https://example.com/config.json','access_key':'fake-access-key-for-tests-only-123456789','codex_home':str(self.home)}
+        path.write_text(json.dumps(c))
+        s.restrict(path)
+        return path, c
+
+    def options(self, **kwargs):
+        return SimpleNamespace(**({'url':None,'codex_home':None,'set_key':False} | kwargs))
+
+    def test_config_edit_validates_then_saves_without_touching_codex(self):
+        path, old = self.connection()
+        before = s.snapshot(self.path)
+        with patch.object(s, 'connection_path', return_value=path), patch.object(s, 'fetch', return_value=self.cloud) as fetch, patch.object(s, 'apply') as apply:
+            s.configure(self.options(url='example.com/new-config.json'))
+        current = json.loads(path.read_text())
+        self.assertEqual(current['url'], 'https://example.com/new-config.json')
+        self.assertEqual(current['access_key'], old['access_key'])
+        fetch.assert_called_once_with(current)
+        apply.assert_not_called()
+        self.assertEqual(s.snapshot(self.path), before)
+
+    def test_failed_config_verification_leaves_old_file(self):
+        path, _ = self.connection()
+        before = s.snapshot(path)
+        with patch.object(s, 'connection_path', return_value=path), patch.object(s, 'fetch', side_effect=s.SafeError('fetch failed')):
+            with self.assertRaises(s.SafeError):
+                s.configure(self.options(url='example.com/new.json'))
+        self.assertEqual(s.snapshot(path), before)
+
+    def test_changed_host_requires_explicit_new_key(self):
+        path, old = self.connection()
+        before = s.snapshot(path)
+        with patch.object(s, 'connection_path', return_value=path), patch.object(s, 'secret_input', return_value=''), patch.object(s, 'fetch') as fetch:
+            with self.assertRaises(s.SafeError):
+                s.configure(self.options(url='new.example.com'))
+            fetch.assert_not_called()
+        self.assertEqual(before, s.snapshot(path))
+        key='new-fake-access-key-for-tests-only-123456789'
+        with patch.object(s, 'connection_path', return_value=path), patch.object(s, 'secret_input', return_value=key), patch.object(s, 'fetch', return_value=self.cloud) as fetch:
+            s.configure(self.options(url='new.example.com'))
+            self.assertEqual(fetch.call_args.args[0]['access_key'],key)
+
+    def test_interactive_blank_keeps_settings_and_key_hidden(self):
+        path, c = self.connection()
+        before = s.snapshot(path)
+        with patch.object(s, 'connection_path', return_value=path), patch.object(s.sys.stdin, 'isatty', return_value=True), patch('builtins.input', side_effect=['','']), patch.object(s, 'secret_input', return_value=''), patch.object(s, 'fetch', return_value=self.cloud):
+            s.configure(self.options())
+        self.assertEqual(s.snapshot(path), before)
+
+    def test_config_external_edit_is_not_overwritten(self):
+        path, c = self.connection()
+        changed = {**c, 'url':'https://example.com/external.json'}
+        def changed_while_fetching(candidate):
+            path.write_text(json.dumps(changed))
+            return self.cloud
+        with patch.object(s, 'connection_path', return_value=path), patch.object(s, 'fetch', side_effect=changed_while_fetching):
+            with self.assertRaises(s.SafeError):
+                s.configure(self.options(url='example.com/new.json'))
+        self.assertEqual(json.loads(path.read_text()), changed)
+
+    def test_config_key_change_does_not_need_sync(self):
+        path, c = self.connection()
+        key='replacement-access-key-for-tests-123456789'
+        with patch.object(s, 'connection_path', return_value=path), patch.object(s, 'secret_input', return_value=key), patch.object(s, 'fetch', return_value=self.cloud), patch.object(s, 'ensure_idle', side_effect=AssertionError('Should not inspect Codex')):
+            s.configure(self.options(set_key=True))
+        self.assertEqual(json.loads(path.read_text())['access_key'], key)
+
+    def test_sync_recognizes_saved_homepage_without_rewriting_connection(self):
+        path, c = self.connection()
+        c['url']='https://example.com'
+        path.write_text(json.dumps(c))
+        before=s.snapshot(path)
+        seen=[]
+        class Response:
+            status=200
+            def __enter__(self): return self
+            def __exit__(self,*args): pass
+            def read(self,limit): return json.dumps({'mode':'pro','base_url':'https://api.example.com/v1','api_key':''}).encode()
+        def capture(request,timeout):
+            seen.append(request.full_url)
+            return Response()
+        with patch.object(s,'connection_path',return_value=path), patch.object(s.urllib.request.OpenerDirector,'open',side_effect=capture), patch.object(s,'apply',return_value='unchanged'):
+            s.sync()
+        self.assertEqual(seen,['https://example.com/config.json'])
+        self.assertEqual(before,s.snapshot(path))
+
+    def test_config_mutex_does_not_allow_concurrent_update(self):
+        path, c = self.connection()
+        with s.lock(path.parent,'.codex-sync-connection.lock'), patch.object(s,'connection_path',return_value=path), patch.object(s,'fetch') as fetch:
+            with self.assertRaises(s.SafeError):
+                s.configure(self.options(url='example.com'))
+            fetch.assert_not_called()
+
+    def test_config_can_initialize_private_connection_file(self):
+        path=self.home/'client'/'connection.json'
+        key='initial-access-key-for-tests-only-123456789'
+        before=s.snapshot(self.path)
+        with patch.object(s,'connection_path',return_value=path), patch.object(s.sys.stdin,'isatty',return_value=True), patch('builtins.input',return_value='example.com'), patch.object(s,'secret_input',return_value=key), patch.object(s,'fetch',return_value=self.cloud):
+            s.configure(self.options(codex_home=str(self.home)))
+        saved=json.loads(path.read_text())
+        self.assertEqual(saved['url'],'https://example.com/config.json')
+        self.assertEqual(saved['access_key'],key)
+        s.private(path.parent)
+        s.private(path)
+        self.assertEqual(before,s.snapshot(self.path))
+
+    def test_config_repairs_an_invalid_saved_url(self):
+        path,c=self.connection()
+        c['url']='http://example.com'
+        path.write_text(json.dumps(c))
+        with patch.object(s,'connection_path',return_value=path), patch.object(s,'secret_input',return_value=c['access_key']), patch.object(s,'fetch',return_value=self.cloud):
+            s.configure(self.options(url='https://example.com'))
+        self.assertEqual(json.loads(path.read_text())['url'],'https://example.com/config.json')
 
 
 if __name__ == '__main__':

@@ -43,20 +43,19 @@ try {
     $connection = Join-Path $config 'connection.json'
     if (-not (Test-Path -LiteralPath $connection)) {
         Write-Host 'First confirm Pro works; exit Codex before synchronization.'
-        $url = Read-Host 'Cloud HTTPS URL (Vercel or Cloudflare)'
-        $secure = Read-Host 'Cloud ACCESS_KEY (32+ characters)' -AsSecureString
         $codexDir = Read-Host 'Codex directory (blank = CODEX_HOME or ~/.codex)'
         if (-not $codexDir) { $codexDir = $env:CODEX_HOME }
         if (-not $codexDir) { $codexDir = Join-Path $env:USERPROFILE '.codex' }
-        $password = [Net.NetworkCredential]::new('', $secure).Password
-        $json = @{url=$url; access_key=$password; codex_home=$codexDir} | ConvertTo-Json
-        [IO.File]::WriteAllText($connection, $json, [Text.UTF8Encoding]::new($false))
-        $password = $null; $json = $null
-        Protect-Path $connection
         if (-not (Test-Path -LiteralPath $codexDir -PathType Container)) { throw 'Initialize Pro first' }
         Protect-Path $codexDir
         $codexConfig = Join-Path $codexDir 'config.toml'
         if (Test-Path -LiteralPath $codexConfig) { Protect-Path $codexConfig }
+        $previousConnectionPath = $env:CODEX_SYNC_CONFIG
+        try {
+            $env:CODEX_SYNC_CONFIG = $connection
+            & $installedExe config --codex-home $codexDir
+            if ($LASTEXITCODE -ne 0) { throw 'Connection validation failed; autostart was not enabled.' }
+        } finally { $env:CODEX_SYNC_CONFIG = $previousConnectionPath }
     }
     # wscript runs a hidden console child and waits, so Task Scheduler tracks its lifetime.
     $exe = (Join-Path $dest 'codex-sync.exe').Replace('"','""')
@@ -71,7 +70,7 @@ try {
     $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName 'CodexSync' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
     Start-ScheduledTask -TaskName 'CodexSync'
-    Write-Host "Installed, hidden at login. Diagnose after stopping the task: & '$dest\codex-sync.exe' sync"
+    Write-Host "Installed, hidden at login. Edit connection settings: & '$dest\codex-sync.exe' config"
 } finally {
     # Only remove the verified temporary child created in this installer.
     $resolved = [IO.Path]::GetFullPath($tmp)

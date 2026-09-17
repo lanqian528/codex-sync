@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import getpass
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,8 @@ import sys
 import tempfile
 import time
 import urllib.request
-from urllib.parse import urlsplit
+import warnings
+from urllib.parse import urlsplit, urlunsplit
 
 import psutil
 import tomlkit
@@ -108,8 +110,8 @@ def atomic_write(path, data, expected, before_commit=lambda: None):
 
 
 @contextlib.contextmanager
-def lock(home):
-    path = home / ".codex-sync.lock"
+def lock(home, name=".codex-sync.lock"):
+    path = home / name
     no_links(path)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -149,6 +151,31 @@ def https_url(value):
     return value
 
 
+def cloud_url(value):
+    """Recognize a homepage/domain without probing other hosts or endpoints."""
+    if not isinstance(value, str):
+        raise SafeError("Invalid cloud URL.")
+    value = value.strip()
+    if not value or "\\" in value:
+        raise SafeError("Invalid cloud URL.")
+    if value.startswith("//"):
+        value = "https:" + value
+    elif "://" not in value:
+        value = "https://" + value
+    https_url(value)
+    parsed = urlsplit(value)
+    path = parsed.path
+    if path in ("", "/", "/index.html"):
+        path = "/config.json"
+    # Explicit custom endpoints remain untouched. No redirects or URL scanning.
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def cloud_origin(value):
+    parsed = urlsplit(cloud_url(value))
+    return parsed.hostname.lower(), parsed.port or 443
+
+
 def pairs(items):
     result = {}
     for key, value in items:
@@ -185,7 +212,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def fetch(connection):
-    https_url(connection["url"])
+    url = cloud_url(connection["url"])
     if "access_key" in connection:
         key = connection["access_key"]
         if not isinstance(key, str) or not re.fullmatch(r"[!-~]{32,256}", key):
@@ -194,7 +221,7 @@ def fetch(connection):
     else:
         auth = base64.b64encode((connection["username"] + ":" + connection["password"]).encode()).decode()
         authorization = "Basic " + auth
-    req = urllib.request.Request(connection["url"], headers={
+    req = urllib.request.Request(url, headers={
         "Authorization": authorization, "Cache-Control": "no-store", "Accept": "application/json"})
     try:
         # Do not inherit ambient proxy configuration that could disclose credentials.
@@ -312,12 +339,14 @@ def connection_path():
     return Path(os.environ.get("CODEX_SYNC_CONFIG", str(default))).expanduser().absolute()
 
 
-def sync():
-    path = connection_path()
+def read_connection(path, allow_missing=False, check_url=True):
     private(path.parent)
     private(path)
-    data, _ = snapshot(path)
+    previous = snapshot(path)
+    data = previous[0]
     if data is None:
+        if allow_missing:
+            return {}, previous
         raise SafeError("Local connection.json is missing.")
     c = parse_json(data)
     if not isinstance(c, dict) or "url" not in c or set(c) - {"url", "access_key", "username", "password", "codex_home"}:
@@ -327,27 +356,112 @@ def sync():
             raise SafeError("Use access_key or legacy credentials, not both.")
     elif not {"username", "password"} <= set(c) or any(not isinstance(c[k], str) or not c[k] or any(ord(x) < 32 for x in c[k]) for k in ("username", "password")) or ":" in c["username"]:
         raise SafeError("Access key or valid legacy credentials required.")
+    if check_url:
+        cloud_url(c["url"])
+    return c, previous
+
+
+def sync():
+    path = connection_path()
+    private(path.parent)
+    if not path.parent.is_dir():
+        raise SafeError("Local connection.json is missing.")
+    # Editing connection settings cannot race an in-flight synchronization.
+    with lock(path.parent, ".codex-sync-connection.lock"):
+        c, _ = read_connection(path)
+        home = c.get("codex_home") or os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+        return apply(home, fetch(c))
+
+
+def secret_input(prompt):
+    if not sys.stdin.isatty():
+        raise SafeError("An interactive terminal is required to enter a key securely.")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            return getpass.getpass(prompt)
+        except getpass.GetPassWarning:
+            raise SafeError("Cannot hide key input; settings were not changed.") from None
+
+
+def configure(args):
+    path = connection_path()
+    c, previous = read_connection(path, allow_missing=True, check_url=False)
+    candidate = dict(c)
+    try:
+        old_url = cloud_url(c["url"]) if c else None
+    except SafeError:
+        old_url = None
+    interactive = not c or not (args.url is not None or args.codex_home is not None or args.set_key)
+    if interactive and not sys.stdin.isatty():
+        raise SafeError("Run config in an interactive terminal, or supply --url / --codex-home for existing settings.")
+    url = args.url
+    if url is None and interactive:
+        url = input("Cloud URL or domain [{}]: ".format(old_url or "required")) or old_url
+    candidate["url"] = cloud_url(url if url is not None else old_url)
+    host_changed = bool(c) and (old_url is None or cloud_origin(candidate["url"]) != cloud_origin(old_url))
+    need_key = args.set_key or interactive or host_changed or not c
+    if need_key:
+        if host_changed:
+            print("Cloud host changed. Enter the key for the new host; the old key will not be sent automatically.")
+        keep = bool(c) and not host_changed
+        key = secret_input("ACCESS_KEY (hidden{}): ".format("; Enter keeps the current key" if keep else "; required"))
+        if key:
+            candidate.pop("username", None)
+            candidate.pop("password", None)
+            candidate["access_key"] = key
+        elif not keep:
+            raise SafeError("A key is required; settings were not changed.")
     home = c.get("codex_home") or os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
-    return apply(home, fetch(c))
+    if args.codex_home is not None:
+        home = args.codex_home
+    elif interactive:
+        home = input("Codex directory [{}]: ".format(home)) or home
+    if not isinstance(home, str) or not home or any(ord(x) < 32 for x in home):
+        raise SafeError("Invalid Codex directory.")
+    home_path = Path(home).expanduser().absolute()
+    private(home_path)
+    if not home_path.is_dir():
+        raise SafeError("Codex directory must already exist; initialize Pro first.")
+    private(home_path / "config.toml")  # Permissions only; never reads its contents.
+    candidate["codex_home"] = str(home_path)
+    no_links(path.parent)
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True, mode=0o700)
+        restrict(path.parent)
+    private(path.parent)
+    with lock(path.parent, ".codex-sync-connection.lock"):
+        if snapshot(path) != previous:
+            raise SafeError("Connection settings changed externally; retry config.")
+        # Only authenticate and validate a read. Never applies provider settings.
+        fetch(candidate)
+        if candidate != c:
+            atomic_write(path, (json.dumps(candidate, ensure_ascii=False, indent=2) + "\n").encode(), previous)
+    return "Connection verified and saved. Watch will reload it next cycle; Codex config.toml was not modified."
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("sync", "watch"))
+    parser.add_argument("command", choices=("sync", "watch", "config"))
+    parser.add_argument("--url", help="config: homepage, domain, or full config URL")
+    parser.add_argument("--codex-home", help="config: change the Codex directory")
+    parser.add_argument("--set-key", action="store_true", help="config: securely prompt for a new access key")
     args = parser.parse_args()
+    if args.command != "config" and (args.url is not None or args.codex_home is not None or args.set_key):
+        parser.error("configuration options require the config command")
     last = None
     while True:
         code = 0
         try:
-            message = sync()
+            message = configure(args) if args.command == "config" else sync()
         except SafeError as exc:
             code, message = 1, str(exc)
         except Exception:
-            code, message = 1, "Synchronization failed safely; configuration retained."
+            code, message = 1, "Operation failed safely; existing configuration retained."
         if message != last:
             print(message, flush=True)
             last = message
-        if args.command == "sync":
+        if args.command != "watch":
             return code
         time.sleep(60)
 
