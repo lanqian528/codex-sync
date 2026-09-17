@@ -44,13 +44,12 @@ try {
     if (-not (Test-Path -LiteralPath $connection)) {
         Write-Host 'First confirm Pro works; exit Codex before synchronization.'
         $url = Read-Host 'Cloud HTTPS URL (Vercel or Cloudflare)'
-        $username = Read-Host 'Read username'
-        $secure = Read-Host 'Read password' -AsSecureString
+        $secure = Read-Host 'Cloud ACCESS_KEY (32+ characters)' -AsSecureString
         $codexDir = Read-Host 'Codex directory (blank = CODEX_HOME or ~/.codex)'
         if (-not $codexDir) { $codexDir = $env:CODEX_HOME }
         if (-not $codexDir) { $codexDir = Join-Path $env:USERPROFILE '.codex' }
         $password = [Net.NetworkCredential]::new('', $secure).Password
-        $json = @{url=$url; username=$username; password=$password; codex_home=$codexDir} | ConvertTo-Json
+        $json = @{url=$url; access_key=$password; codex_home=$codexDir} | ConvertTo-Json
         [IO.File]::WriteAllText($connection, $json, [Text.UTF8Encoding]::new($false))
         $password = $null; $json = $null
         Protect-Path $connection

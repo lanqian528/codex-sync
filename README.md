@@ -1,10 +1,66 @@
-# codex-sync
+# Codex Sync
 
-个人使用的 Codex 多设备 provider 同步工具。云端只有受 Basic Auth 保护的 JSON；客户端仅 `sync` / `watch`。无数据库、设备注册、状态上报、账号池、额度检测或请求转发。
+个人使用的 Codex 多设备 provider 同步工具。一个带密钥登录的管理页、一份私有 JSON、一个本地 Python 脚本。支持 **Vercel + Private Blob** 和 **Cloudflare Workers + R2**。
 
-**首次接入前确保本机 Pro 可用。退出 Codex → 同步 → 重新打开并用新会话验证。运行中的任务不会实时切换。**
+没有设备注册、状态上报、账号池、额度检测或请求转发。客户端只有 `sync` / `watch`。管理页可切换 Pro / API、更新 API 地址和 Key；保存后生效，无需重新部署。
 
-## 一行安装（发布 Release 后可用）
+## 认证与存储
+
+云端环境变量 **`ACCESS_KEY`** 是唯一的访问密钥，使用随机的 32–256 个非空白 ASCII 字符。**同一把密钥既能管理，也能读取配置**；它与第三方 `api_key` 是两把不同的密钥。所有客户端持有者都具有管理权限。
+
+- 管理登录提交到 `/api/session`，成功后获得 1 小时的 HttpOnly、Secure、SameSite=Strict 签名 Cookie；密钥不保存到 localStorage/sessionStorage。
+- 客户端以 `Authorization: Bearer <ACCESS_KEY>` 请求 `/config.json`，URL 不含密钥。
+- `/api/admin` 读写接口同样要求认证；Cookie 写请求还检查同源和 CSRF。读取管理配置只返回 Key 是否存在，不回显已保存的 API Key。
+- 未认证返回 401；未设置有效 ACCESS_KEY 返回 503。所有配置和错误响应禁止缓存。登录页静态内容可以公开访问，但里面没有密钥或业务配置。
+- 私有存储只保存一个 `config.json`，内容恰好是 `mode`、`base_url`、`api_key`。不是公开 Blob，没有公开下载权限。Vercel 使用 `useCache: false` 读取源站；Cloudflare 使用私有 R2。
+- 保存先校验，再条件替换；冲突返回 409，要求重新读取，防止旧页面覆盖新配置。网络中断可能导致保存结果不确定，页面会要求重新读取，不虚报成功。
+
+示例 JSON（真实值不要提交 Git）：
+
+```json
+{"mode":"pro","base_url":"https://api.example.com/v1","api_key":""}
+```
+
+API 模式需要非空真实 Key。切回 Pro 仍保留 API 设置。可选环境变量 `CLOUD_CONFIG` 仅作为存储文件尚不存在时的初始配置；一旦页面保存成功，以私有文件为准。
+
+## 部署 Vercel
+
+1. 导入此 GitHub 仓库，Framework Preset 选 **Other**，根目录保持仓库根目录。
+2. 为 Production 设置 **Sensitive 环境变量 `ACCESS_KEY`**，不要使用 `NEXT_PUBLIC_` 前缀。
+3. 项目 Storage 中创建 **Private** Blob，并连接到 Production。平台自动配置存储凭据，不要复制到前端或 Git。CLI 也可执行 `npx vercel@latest blob create-store codex-sync-private --access private --yes --environment production`。
+4. 部署到 Production，打开 `https://<生产域名>/` 登录。客户端 URL 为 `https://<生产域名>/config.json`。
+
+源码方式：
+
+```bash
+npm ci
+npx vercel@latest login
+npx vercel@latest link
+npx vercel@latest env add ACCESS_KEY production
+npx vercel@latest blob create-store codex-sync-private --access private --yes --environment production
+npx vercel@latest --prod
+```
+
+已有私有存储时连接它即可，不要重复创建。只把存储连接到需要的环境，不要让测试部署用弱测试密钥连接真实配置存储。私有存储不是内存或 `/tmp` 文件，重新部署、函数重启后配置仍保留。
+
+设置或轮换 ACCESS_KEY 后需要重新部署；页面修改业务配置不需要。Vercel 旧部署可能保留旧环境变量且仍能访问共享存储，**轮换密钥后应删除旧部署或通过平台限制其访问，并替换所有客户端密钥**。使用稳定生产域名，不要给客户端填写受 Vercel 登录保护的 Preview 地址。域名可达性需在目标设备网络实测。
+
+## 部署 Cloudflare
+
+```bash
+cd worker
+npm ci
+npx wrangler login
+npx wrangler r2 bucket create codex-sync-config
+npx wrangler secret put ACCESS_KEY
+npx wrangler deploy
+```
+
+`wrangler.jsonc` 的 `CONFIG_BUCKET` 绑定私有 R2 bucket，`ASSETS` 提供同一套管理页。不启用 R2 公开访问或自定义公开下载域名。若 bucket 已存在，跳过创建；可修改示例 bucket 名后部署。管理页路径 `/`，客户端路径 `/config.json`。Cloudflare 运行时日志采集关闭，代码不记录请求密钥、JSON 或口令。
+
+## 一行安装客户端
+
+**首次接入前确认本机 Pro 正常。退出 Codex → 同步 → 重新打开并用新会话验证。**不会实时切换运行中的任务。
 
 Windows x64，普通 PowerShell：
 
@@ -12,68 +68,31 @@ Windows x64，普通 PowerShell：
 irm https://raw.githubusercontent.com/lanqian528/codex-sync/main/scripts/install.ps1 | iex
 ```
 
-Linux x64 / arm64（需要 systemd、curl、unzip；首次交互配置还需要 python3）：
+Linux x64 / ARM64：
 
 ```bash
 bash <(curl --proto '=https' -fsSL https://raw.githubusercontent.com/lanqian528/codex-sync/main/scripts/install.sh)
 ```
 
-安装器下载 GitHub Release、校验 SHA-256、询问云端读取信息，然后注册后台自启动。不需要给客户端填 API Key。它只对 Codex 目录和 config.toml 收紧权限，不递归操作，不读取登录文件。口令输入隐藏；不要把口令放进命令行或 URL。校验值与发布包来自同一仓库，用于下载完整性检查，并非独立签名。
+首次询问云端 URL、ACCESS_KEY、Codex 目录，校验 Release SHA-256 并设置后台自启动。不需要在客户端另外填写第三方 API Key。Linux 需要 systemd、curl、unzip；首次生成连接 JSON 还需 python3。SHA-256 用于下载完整性检查，不是独立发布签名。
 
-Windows 注册当前用户登录时运行的 `CodexSync` 计划任务，无命令窗口；不在登录前使用系统账号运行。Linux 使用用户级 systemd，登录后自启；需要服务器重启后、未登录也运行时，再执行 `sudo loginctl enable-linger "$USER"`。后台每 60 秒检查一次，网络错误下轮重试，崩溃由系统服务重启；不承诺进程检查与写入之间绝对不存在启动竞态，请在切换期间保持 Codex 关闭。
+安装脚本会收紧连接目录、Codex 目录和 config.toml 的权限；不递归处理登录文件。Windows 登录后使用隐藏窗口计划任务运行，Linux 使用用户级 systemd。Linux 服务器希望重启后、未登录也运行时：`sudo loginctl enable-linger "$USER"`。
 
-安装器可重复用于更新。自定义仓库/版本：Linux 设置 `CODEX_SYNC_REPO=owner/repo` 和 `CODEX_SYNC_VERSION=v0.1.0`；Windows 下载脚本后传 `-Repo owner/repo -Version v0.1.0`。不自动下载软件更新。
+可重复执行安装脚本更新，**已有连接文件不会被覆盖**。Linux 可设置 `CODEX_SYNC_REPO=owner/repo`、`CODEX_SYNC_VERSION=v0.3.0`；Windows 下载脚本后传 `-Repo owner/repo -Version v0.3.0`。不会自动下载程序更新。
 
-## 云端：Vercel（默认）或 Cloudflare
+## 本地配置与两个命令
 
-两个平台使用相同的 JSON 和 Basic Auth，客户端只需更换 URL。域名是否在所在网络可达需要实测，不保证任一平台的默认域名在所有地区可用。
-
-### Vercel
-
-将此 GitHub 仓库导入 Vercel，Framework Preset 选 **Other**、Root Directory 保持仓库根目录。无需数据库或前端。也可在根目录运行：
-
-```bash
-npx vercel login
-npx vercel link
-npx vercel env add READ_USERNAME production
-npx vercel env add READ_PASSWORD production
-npx vercel env add CLOUD_CONFIG production
-npx vercel --prod
-```
-
-在交互输入中设置独立读取用户名、口令，以及完整 JSON；不要把值写进命令参数。环境变量也可以在 Vercel 项目 Settings → Environment Variables 设置，生产环境中的口令和 JSON 标记为 Sensitive。不要使用 `NEXT_PUBLIC_` 前缀。
-
-生产 URL：`https://<项目生产域名>/config.json`。首次未配置时返回 503，不泄漏数据。未授权时返回 401。成功、认证失败、配置错误均不缓存，显式禁止 Vercel CDN 缓存。使用稳定的生产域名；Preview 的平台登录保护可能阻止客户端读取，不要把需要 Vercel 登录的预览链接填进客户端。
-
-每次更新 `CLOUD_CONFIG`（包括只切 mode）后必须 **重新部署到 Production** 才会生效。旧部署快照保留旧环境变量；轮换凭据时请按平台方式移除旧部署，避免旧部署 URL 长期使用旧口令。程序不读取 Vercel 账号 token，Vercel 管理权限只用于部署。
-
-### Cloudflare Worker（可选）
-
-云端使用 Worker secrets 保存一个完整 JSON，读取口令另外保存，不需要 KV。Cloudflare 账号管理员可以更新秘密；公开仓库、客户端源码中不保存真实值。这里替代了原方案的 SSH 文件编辑。
-
-```bash
-cd worker
-npm install
-npx wrangler login
-npx wrangler deploy
-npx wrangler secret put READ_USERNAME
-npx wrangler secret put READ_PASSWORD
-npx wrangler secret put CLOUD_CONFIG
-```
-
-最后一个命令的交互输入粘贴完整单行 JSON，例如（请自行替换 Key）：
+连接文件默认 `~/.config/codex-sync/connection.json`，可通过 `CODEX_SYNC_CONFIG` 指定其他文件：
 
 ```json
-{"mode":"api","base_url":"https://api.example.com/v1","api_key":"REPLACE_WITH_REAL_KEY"}
+{
+  "url": "https://YOUR_PROJECT.vercel.app/config.json",
+  "access_key": "REPLACE_WITH_YOUR_32_CHARACTER_ACCESS_KEY",
+  "codex_home": "~/.codex"
+}
 ```
 
-也可以在 Cloudflare Dashboard → Worker → Settings → Variables and Secrets 中设置上述三个 Secret。读取地址为 `https://codex-sync-config.<你的子域>.workers.dev/config.json`。只开放 GET，无写接口，不重定向；成功和错误均 `Cache-Control: no-store`。Workers 日志采集关闭，代码不记录请求、口令或 JSON。不要开启记录请求头/响应正文的外部日志规则。
-
-更新模式、URL、Key 时重新设置 **完整** `CLOUD_CONFIG` Secret（一次替换），或在控制台修改并部署。切回 Pro 只把 mode 改成 pro，保留 API 设置。Secret 更新依赖 Cloudflare 部署传播时间；无额外版本系统。读口令泄露后更新 `READ_PASSWORD` 并替换全部客户端连接配置。不要把秘密放进 wrangler.jsonc、GitHub Actions 或 Git。
-
-## 手动运行
-
-源码需要 Python 3.10+：
+`codex_home` 可省略：优先 `CODEX_HOME`，否则 `~/.codex`。App / CLI 路径不同时分别配置，不自动发现。不要让不同云端同时管理一个目录。
 
 ```bash
 python -m pip install -r requirements.txt
@@ -81,46 +100,32 @@ python codex_sync.py sync
 python codex_sync.py watch
 ```
 
-发布包直接运行 `codex-sync sync` / `codex-sync watch`（Windows 文件名带 `.exe`）。发布矩阵：Windows x64、Linux x64（glibc 2.35+）、Linux arm64（glibc 2.39+）。Windows ARM 和 Alpine/musl 不在二进制支持范围；macOS 可从源码运行，未提供打包版本。
+发布成品为 `codex-sync sync` / `codex-sync watch`，Windows 文件名带 `.exe`。watch 每轮结束后等待 60 秒；网络超时为 15 秒。
 
-本地配置默认 `~/.config/codex-sync/connection.json`，可用 `CODEX_SYNC_CONFIG` 指定不同文件。复制 `examples/connection.example.json` 后填写 URL、用户名、独立读取口令。`codex_home` 可省略，优先读取 `CODEX_HOME`，否则 `~/.codex`。App/CLI 使用不同目录时，分别设置连接文件、分别运行；不要让两份连接文件同时管理同一目录。
+**从 v0.2.x 升级**：将连接文件的 `username` / `password` 替换为 `access_key`，不要同时配置两种认证。旧版客户端也可以手工设置 `username: "sync"`、`password: "与 ACCESS_KEY 相同的值"` 过渡使用；原 READ_USERNAME / READ_PASSWORD 已停用，不能绕过 ACCESS_KEY。此前保存在 CLOUD_CONFIG 中的配置可作为初始值，管理页面第一次保存后进入私有存储。
 
-手工设置时，连接目录和 Codex 目录使用权限 700；连接文件和现有 config.toml 使用 600。Windows ACL 只允许当前用户和 SYSTEM。权限不满足时程序拒绝写入，不主动调整已有配置权限。安装脚本是一次性权限设置的入口。
+Linux / macOS：连接目录和 Codex 目录权限 700；连接文件和 config.toml 权限 600。Windows ACL 仅当前用户与 SYSTEM。同步程序发现权限过宽时拒绝写入，不主动改变既有文件权限。
 
-## 修改范围与安全边界
+## 本地保护范围
 
-- 首次接入只接受缺省 provider 或 `openai`，且 `synced_api` 必须未占用。原 provider 记录仅保存一次，位于 Codex 目录的 `.codex-sync-state.json`，只含是否存在和原值。
-- API 模式只修改根表 `model_provider` 和 `model_providers.synced_api`；Pro 模式恢复原根键并删除专用表。保留模型、MCP、其他表及注释，不恢复整份旧配置。不要在工具管理期间手工编辑专用表；冲突会停下。
-- 按项目需求使用 `requires_openai_auth = true`，并设置 `experimental_bearer_token`。官方定义 true 表示 OpenAI 认证，并非通用 Bearer 开关；已测 Windows CLI 0.155.0-alpha.2.6 在这两个字段同时存在时优先使用直接 Bearer，未携带假 Pro token。其他版本必须重新运行请求测试，不能仅凭 TOML 可解析就认定安全。 Key 明文保存在 config.toml，官方更推荐 env_key；这里按桌面 App 免环境变量配置的需求选择直接 Bearer。
-- 不读取、复制、上传或写入真实 auth.json，不访问系统凭证库，不执行 login/logout。不会阻止 Codex 自身刷新凭证，也不能保证失效后永远免登录。
-- 每次重新获取并完整校验 JSON；只接受 HTTPS，无 URL 凭证、查询串或重定向；15 秒网络超时、64 KiB 响应上限。不继承代理环境变量。只写变化内容。
-- 配置写入使用保留注释的 tomlkit、同目录私有临时文件、内容校验、互斥锁、外部修改检查和原子替换。写入失败保留原文件。记录先落盘，进程在两次替换之间退出时，下一次可继续，绝不还原整份旧配置。
-- `sync` 和 `watch` 均检查当前用户 Codex App/CLI/相关后台。发现运行或无法确认则暂缓。系统进程短暂消失可忽略；其他未知错误不会绕过检查。无法识别被任意重命名的进程。
-- profile provider 覆盖和目录内策略文件会阻止同步。项目配置、命令行 `-c`、系统/企业策略仍可能覆盖用户配置；工具无法完整判断这些生效层，不强制改写它们。请在新会话确认实际 provider。
-- 日志仅输出固定状态/错误，不输出异常原文、URL、Key 或口令。没有自动状态上报。文件符号链接、重解析点和硬链接不支持。
+- 首次只接受根 provider 缺省或 `openai`，`synced_api` 表必须未占用。只记录一次原值和是否存在到 `.codex-sync-state.json`，不含登录凭证。
+- API 模式只修改根 `model_provider` 和 `model_providers.synced_api`；Pro 模式恢复原根键并删除专用表。不还原整份旧文件，保留模型、MCP、其他表和注释。
+- 按项目要求使用 **`requires_openai_auth = true`** 和 `experimental_bearer_token`。官方定义 true 表示 OpenAI 认证，不是通用 Bearer 开关。已测 CLI 在这两个字段同时存在时采用直接 Bearer；其他版本仍需实测。API Key 明文落在私有 config.toml，官方更推荐 env_key。
+- 不读取、上传、复制或改写真实 auth.json，不访问系统凭证库，不执行 login/logout。不阻止 Codex 自身刷新，也不保证失效凭证永远免登录。
+- HTTPS、不跟随云端重定向、不继承代理环境、限制响应大小。出错不打印异常原文、密钥或配置；只输出固定状态。没有状态上报。
+- 同目录私有临时文件、内容校验、原子替换、本地互斥锁和外部修改检查；配置未变化不写入。符号链接、重解析点和硬链接不支持。
+- sync/watch 都检查当前用户 Codex App / CLI / 相关后台；忙碌或状态不明则等待，不关闭或重启 Codex。简单进程检查不能识别任意改名的程序，也不能绝对排除检查后启动的竞态。
+- profile provider 覆盖、目录内策略文件会阻止同步。项目配置、启动参数和系统管理策略仍可能覆盖它；工具不强行更改这些配置。
 
-## 自启动管理
+## 后台管理与平台支持
 
-Linux：
+Windows：`Get-ScheduledTaskInfo -TaskName CodexSync`；停用：`Stop-ScheduledTask -TaskName CodexSync`、`Disable-ScheduledTask -TaskName CodexSync`。如果隐藏子进程尚在运行，关闭自己的 `codex-sync.exe`，再手动运行 sync 排查。Windows 依赖 WScript；禁用它的环境需要自行配置等效任务。
 
-```bash
-systemctl --user status codex-sync
-journalctl --user -u codex-sync -n 30
-systemctl --user disable --now codex-sync
-```
+Linux：`systemctl --user status codex-sync`；查看输出：`journalctl --user -u codex-sync -n 30`；停用：`systemctl --user disable --now codex-sync`。
 
-Windows：
+二进制：Windows x64、Linux x64（glibc 2.35+）、Linux ARM64（glibc 2.39+）。不支持 Alpine/musl 二进制。macOS 可从源码运行，未提供原生安装包。
 
-```powershell
-Get-ScheduledTaskInfo -TaskName CodexSync
-Stop-ScheduledTask -TaskName CodexSync
-Disable-ScheduledTask -TaskName CodexSync
-& "$env:LOCALAPPDATA/codex-sync/codex-sync.exe" sync
-```
-
-Windows 使用系统 WScript 隐藏窗口启动；禁用 WScript 的环境不支持此安装方式。更新/停用时可检查自己的 `codex-sync.exe` 进程是否已退出；程序不会关闭 Codex App/CLI。
-
-macOS 手动自启动示例：在 `~/Library/LaunchAgents/local.codex-sync.plist` 写入以下内容并替换绝对路径，使用安装了依赖的 Python。然后 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.codex-sync.plist`；卸载用 `launchctl bootout gui/$(id -u)/local.codex-sync`。本平台未实际运行验证。
+macOS 自启动：创建 `~/Library/LaunchAgents/local.codex-sync.plist`，填入绝对路径：
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -133,21 +138,22 @@ macOS 手动自启动示例：在 `~/Library/LaunchAgents/local.codex-sync.plist
 </dict></plist>
 ```
 
-## 验证与发布
+运行 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.codex-sync.plist`；停用用 `launchctl bootout gui/$(id -u)/local.codex-sync`。
+
+## 测试与发布
 
 ```bash
 python -m unittest discover -s tests -v
-cd worker && node --test
+npm ci
+npm test
 ```
 
-可选真实 CLI 检查：`python tests/probe_cli.py /absolute/path/to/codex`。这个测试只创建临时目录和假登录数据，启动本机 HTTP 捕获服务，验证 API Bearer、Pro token 不外发和假 auth 文件不变。生产同步程序仍严格要求 HTTPS；测试不会访问第三方 API。测试会暂时启动 Codex，期间 watcher 暂缓是预期行为。
+可选真实 CLI 验证：`python tests/probe_cli.py /absolute/path/to/codex`。仅使用临时 CODEX_HOME、假 Pro 凭证和本机捕获端点；生产同步仍严格 HTTPS。浏览器开发测试用 `node tests/dev_server.mjs`，它只监听回环地址、只用假密钥和内存配置，绝不能用于部署。
 
-已实际验证：Windows Python 3.11、14 项基本测试、5 项云端测试（含 Vercel 适配）；Windows `codex-cli 0.155.0-alpha.2.6` 在 requires_openai_auth=true 下真实发出的 API 请求使用假 API Key、未携带假 Pro token、未更改假登录数据。GitHub Actions 的 Windows x64、Linux x64/ARM64 已通过测试、打包及成品断网保护测试；从 Release 下载的 Windows 成品另行通过 SHA-256 和断网不改配置验证。
+已测 Windows `codex-cli 0.155.0-alpha.2.6`：requires_openai_auth=true 时，实际请求使用假 API Key、未携带假 Pro token、假登录文件不变。管理页已通过本机浏览器的登录、保存、刷新读取、切回 Pro 保留 Key、退出测试；后端覆盖未授权请求、CSRF、冲突和存储错误。Actions 在 Windows/Linux x64/ARM64 运行客户端/云端测试、打包和成品断网保护测试。
 
-尚未验证：桌面 App 新会话端到端切换、真实第三方 API/模型响应、Windows 登录后任务启动、Linux 实机开机与桌面环境、macOS。GitHub Actions 测试和打包结果以对应运行记录为准，不能将编译通过视为上述兼容性验证通过。
+未实测：真实第三方 API/模型、桌面 App 新会话端到端切换、设备重启后的自启动、macOS、Cloudflare R2 实际部署。编译通过不代表这些场景已验证。
 
-推送 main / PR 自动测试和打包；推送 `v*` tag 会在全部平台通过后创建 GitHub Release 并附带 ZIP 和 SHA-256。Actions 不需要任何业务秘密，使用内置 GITHUB_TOKEN 上传发布资产。不要上传 connection.json、cloud.json、auth.json、真实 config.toml 或任何个人配置。
+推送 main / PR 自动测试和打包，`v*` 标签自动发布三平台 ZIP 与 SHA-256。Git 中只有占位符和测试假密钥；不要提交真实连接文件、config.toml、auth.json、环境变量或存储令牌。
 
-官方依据：[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)、[认证](https://learn.chatgpt.com/docs/auth)、[Cloudflare Worker Secrets](https://developers.cloudflare.com/workers/configuration/secrets/)。
-
-Vercel 依据：[Node.js Functions](https://vercel.com/docs/functions/runtimes/node-js)、[环境变量](https://vercel.com/docs/environment-variables)。
+依据：[Codex 配置](https://learn.chatgpt.com/docs/config-file/config-reference)、[认证](https://learn.chatgpt.com/docs/auth)、[Vercel Private Blob](https://vercel.com/docs/vercel-blob/using-blob-sdk)、[Cloudflare R2](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)。

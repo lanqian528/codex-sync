@@ -111,6 +111,30 @@ class SyncTests(unittest.TestCase):
         with self.assertRaises(s.SafeError):
             s.NoRedirect().redirect_request(None, None, None, None, None, None)
 
+    def test_access_key_is_only_in_authorization_header(self):
+        key = 'fake-access-key-for-tests-only-123456789'
+        seen = []
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, limit): return json.dumps(self_cloud).encode()
+        self_cloud = self.cloud
+        def capture(req, timeout):
+            seen.append(req)
+            return Response()
+        with patch.object(s.urllib.request.OpenerDirector, 'open', side_effect=capture):
+            self.assertEqual(s.fetch({'url': 'https://example.com/config.json', 'access_key': key}), self.cloud)
+        self.assertEqual(seen[0].get_header('Authorization'), 'Bearer ' + key)
+        self.assertNotIn(key, seen[0].full_url)
+
+    def test_invalid_access_key_does_not_make_request(self):
+        with patch.object(s.urllib.request.OpenerDirector, 'open') as opened:
+            for key in ['', 'short', 'a'*32+'\n', 123]:
+                with self.assertRaises(s.SafeError):
+                    s.fetch({'url':'https://example.com/config.json','access_key':key})
+            opened.assert_not_called()
+
     def test_duplicate_fields_rejected(self):
         with self.assertRaises(s.SafeError):
             s.parse_json('{"mode":"api","mode":"pro"}')

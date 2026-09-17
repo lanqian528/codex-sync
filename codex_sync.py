@@ -186,9 +186,16 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def fetch(connection):
     https_url(connection["url"])
-    auth = base64.b64encode((connection["username"] + ":" + connection["password"]).encode()).decode()
+    if "access_key" in connection:
+        key = connection["access_key"]
+        if not isinstance(key, str) or not re.fullmatch(r"[!-~]{32,256}", key):
+            raise SafeError("Access key must contain 32-256 printable non-space characters.")
+        authorization = "Bearer " + key
+    else:
+        auth = base64.b64encode((connection["username"] + ":" + connection["password"]).encode()).decode()
+        authorization = "Basic " + auth
     req = urllib.request.Request(connection["url"], headers={
-        "Authorization": "Basic " + auth, "Cache-Control": "no-store", "Accept": "application/json"})
+        "Authorization": authorization, "Cache-Control": "no-store", "Accept": "application/json"})
     try:
         # Do not inherit ambient proxy configuration that could disclose credentials.
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
@@ -313,10 +320,13 @@ def sync():
     if data is None:
         raise SafeError("Local connection.json is missing.")
     c = parse_json(data)
-    if not isinstance(c, dict) or not {"url", "username", "password"} <= set(c) or set(c) - {"url", "username", "password", "codex_home"}:
+    if not isinstance(c, dict) or "url" not in c or set(c) - {"url", "access_key", "username", "password", "codex_home"}:
         raise SafeError("Invalid local connection configuration.")
-    if any(not isinstance(c[k], str) or not c[k] or any(ord(x) < 32 for x in c[k]) for k in ("username", "password")) or ":" in c["username"]:
-        raise SafeError("Invalid read credentials.")
+    if "access_key" in c:
+        if "username" in c or "password" in c:
+            raise SafeError("Use access_key or legacy credentials, not both.")
+    elif not {"username", "password"} <= set(c) or any(not isinstance(c[k], str) or not c[k] or any(ord(x) < 32 for x in c[k]) for k in ("username", "password")) or ":" in c["username"]:
+        raise SafeError("Access key or valid legacy credentials required.")
     home = c.get("codex_home") or os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
     return apply(home, fetch(c))
 

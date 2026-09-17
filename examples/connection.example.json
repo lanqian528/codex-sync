@@ -1,6 +1,5 @@
 {
   "url": "https://YOUR_PROJECT.vercel.app/config.json",
-  "username": "reader",
-  "password": "REPLACE_WITH_SEPARATE_READ_PASSWORD",
+  "access_key": "REPLACE_WITH_YOUR_32_CHARACTER_ACCESS_KEY",
   "codex_home": "~/.codex"
 }

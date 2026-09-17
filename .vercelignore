@@ -1,11 +1,14 @@
 *
 !api
 !api/**
+!cloud
+!cloud/**
 !worker
 !worker/src
 !worker/src/**
 !worker/package.json
 !package.json
+!package-lock.json
 !vercel.json
 !public
 !public/**

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer"><meta name="color-scheme" content="light">
+  <title>Codex Sync · 配置管理</title>
+  <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/" aria-label="Codex Sync 首页"><span class="brand-icon">C<span>↗</span></span><span>Codex Sync</span><span class="tag">PERSONAL CLOUD</span></a><div class="secure"><span class="dot"></span>私有配置 · 安全访问</div></header>
+  <main>
+    <section id="login-view" class="login-layout">
+      <div class="intro"><span class="eyebrow">一个配置，跟随到每台设备</span><h1>切换模式。<br><span>继续你的工作。</span></h1><p>在这里管理 Codex 的云端配置。设备在空闲时同步，已有的本机登录和其他设置保持不变。</p><div class="intro-flow"><span>云端配置</span><i>→</i><span>安全同步</span><i>→</i><span>你的设备</span></div><div class="privacy-note"><span class="shield">◇</span><div><strong>配置始终需要认证</strong><p>同一把访问密钥用于管理登录和客户端读取。它与第三方 API Key 是两把不同的密钥。</p></div></div></div>
+      <div class="login-card"><div class="card-label">管理入口</div><h2>欢迎回来</h2><p class="muted">输入云端环境变量 ACCESS_KEY 中的访问密钥。</p><form id="login-form"><label for="access-key">访问密钥</label><div class="password-wrap"><input id="access-key" type="password" autocomplete="current-password" required minlength="32" maxlength="256" placeholder="输入你的访问密钥"><button type="button" id="show-access" class="reveal" aria-label="显示访问密钥">显示</button></div><p class="field-note">至少 32 个字符。不会保存到浏览器本地存储。</p><button id="login-button" class="primary full" type="submit">登录管理 <span>→</span></button></form><p class="login-footer">会话将在 1 小时后过期</p></div>
+    </section>
+    <section id="dashboard" hidden>
+      <div class="page-heading"><div><span class="eyebrow">WORKSPACE / CLOUD CONFIG</span><h1>云端配置</h1><p class="muted">改一次配置，让设备在下一轮同步时跟随。</p></div><div class="header-actions"><span id="saved-badge" class="pill"><span class="dot"></span>已读取</span><button id="logout" class="text-button">退出登录 ↗</button></div></div>
+      <div class="dashboard-grid"><aside><div class="aside-label">工作区</div><div class="nav-active"><span>◈</span> 模式与连接</div><div class="aside-card"><span class="card-label">同步方式</span><strong>每 60 秒检查一次</strong><p>客户端发现 Codex 正在运行时会等待。切换前先退出 Codex，同步后用新会话验证。</p></div><div class="aside-bottom"><span class="dot"></span>访问密钥保护中</div></aside>
+      <form id="config-form" class="config-panel"><section class="panel-section"><div class="section-title"><span class="step">01</span><div><h2>选择运行模式</h2><p>选择设备下次同步后使用的连接方式。</p></div></div><div class="mode-grid"><label class="mode-card"><input type="radio" name="mode" value="pro" checked><span class="mode-icon">◎</span><span class="mode-copy"><strong>本机 Pro</strong><span>使用设备已有的 ChatGPT 登录</span></span><span class="radio-dot"></span></label><label class="mode-card"><input type="radio" name="mode" value="api"><span class="mode-icon">⌘</span><span class="mode-copy"><strong>第三方 API</strong><span>使用下方的 API 地址与密钥</span></span><span class="radio-dot"></span></label></div></section>
+      <section class="panel-section"><div class="section-title"><span class="step">02</span><div><h2>API 连接</h2><p>切回 Pro 后仍保留，方便下次使用。</p></div><span id="key-status" class="small-tag">尚未设置 Key</span></div><label for="base-url">API 地址 <span class="label-meta">仅支持 HTTPS</span></label><input id="base-url" type="url" required placeholder="https://api.example.com/v1" autocomplete="off"><div class="label-row"><label for="api-key">API Key</label><span class="label-meta">留空表示保留已保存的 Key</span></div><div class="password-wrap"><input id="api-key" type="password" autocomplete="new-password" maxlength="8192" placeholder="输入新的 API Key 以替换"><button id="show-api" type="button" class="reveal" aria-label="显示新 API Key">显示</button></div><p class="field-note">已保存的 Key 不在管理页面回显，也不会进入公开代码。</p></section>
+      <div id="storage-warning" class="notice warning" hidden>尚未连接私有存储。请连接 Vercel Private Blob 或 Cloudflare R2，才能保存配置。</div>
+      <div class="save-bar"><div><span id="change-dot" class="dot"></span><span id="change-label">与云端配置一致</span><small id="save-hint">保存后无需重新部署</small></div><div class="save-actions"><button type="button" id="reload" class="secondary">重新读取</button><button type="submit" id="save" class="primary" disabled>保存配置 <span>↗</span></button></div></div></form></div>
+      <div class="connection-strip"><div><span class="card-label">客户端连接地址</span><code id="endpoint"></code></div><button id="copy-url" class="secondary">复制地址</button></div>
+    </section>
+    <div id="message" class="message" role="status" aria-live="polite" hidden></div>
+  </main>
+  <footer><span>Codex Sync</span><span>只同步 provider · 不上传本机登录凭证</span></footer>
+</body>
+</html>

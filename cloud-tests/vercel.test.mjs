@@ -2,30 +2,30 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import endpoint from '../api/config.mjs';
+import admin from '../api/admin.mjs';
+import session from '../api/session.mjs';
+import { store } from '../cloud/vercel.mjs';
 globalThis.crypto ??= webcrypto;
-
-test('Vercel adapter: authentication, no caching, read only, updates', async () => {
-  const original = Object.fromEntries(['READ_USERNAME', 'READ_PASSWORD', 'CLOUD_CONFIG'].map(k => [k, process.env[k]]));
-  Object.assign(process.env, { READ_USERNAME: 'reader', READ_PASSWORD: 'fake-password', CLOUD_CONFIG: JSON.stringify({ mode: 'api', base_url: 'https://api.example.com/v1', api_key: 'fake-key' }) });
-  try {
-    const request = (path, method = 'GET', auth = true) => new Request('https://example.vercel.app' + path, { method, headers: auth ? { Authorization: 'Basic ' + btoa('reader:fake-password') } : {} });
-    for (const path of ['/config.json', '/api/config']) {
-      const res = await endpoint.fetch(request(path));
-      assert.equal(res.status, 200);
-      assert.match(res.headers.get('Cache-Control'), /no-store/);
-      assert.match(res.headers.get('Vercel-CDN-Cache-Control'), /no-store/);
-      assert.equal((await res.json()).api_key, 'fake-key');
-      assert.equal((await endpoint.fetch(request(path, 'GET', false))).status, 401);
-      assert.equal((await endpoint.fetch(request(path, 'POST'))).status, 405);
-    }
-    process.env.CLOUD_CONFIG = JSON.stringify({ mode: 'pro', base_url: 'https://new.example.com/v1', api_key: 'updated-fake-key' });
-    assert.equal((await (await endpoint.fetch(request('/config.json'))).json()).mode, 'pro');
-    assert.equal((await endpoint.fetch(request('/config.json?password=no'))).status, 404);
-    process.env.CLOUD_CONFIG = '{}';
-    assert.equal((await endpoint.fetch(request('/config.json'))).status, 503);
-  } finally {
-    for (const [key, value] of Object.entries(original)) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
+test('Vercel routes forward bodies, cookies, auth and conditional writes', async()=>{
+  const keys=['ACCESS_KEY','CLOUD_CONFIG','BLOB_STORE_ID','BLOB_READ_WRITE_TOKEN'];
+  const previous=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
+  const oldRead=store.read,oldWrite=store.write;
+  const key='fake-access-key-for-tests-only-123456789';
+  process.env.ACCESS_KEY=key; process.env.BLOB_STORE_ID='fake'; delete process.env.CLOUD_CONFIG;
+  let saved=null;
+  store.read=async()=>saved;
+  store.write=async config=>{saved={config,etag:'"one"'};return saved.etag};
+  const req=(path,method='GET',body,headers={})=>new Request('https://example.vercel.app'+path,{method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json',...headers},...(body?{body:JSON.stringify(body)}:{})});
+  try{
+    const login=await session.fetch(req('/api/session','POST',{access_key:key},{Origin:'https://example.vercel.app'}));
+    assert.equal(login.status,200);assert.match(login.headers.get('set-cookie'),/HttpOnly/);
+    const res=await admin.fetch(req('/api/admin','PUT',{mode:'api',base_url:'https://api.example.com/v1',api_key:'fake-key'},{'If-Match':'initial'}));
+    assert.equal(res.status,200);
+    const read=await endpoint.fetch(req('/config.json'));
+    assert.equal((await read.json()).api_key,'fake-key');assert.match(read.headers.get('Vercel-CDN-Cache-Control'),/no-store/);
+    assert.equal((await endpoint.fetch(req('/config.json','GET',null,{Authorization:''}))).status,401);
+  }finally{
+    store.read=oldRead;store.write=oldWrite;
+    for(const[k,v]of Object.entries(previous)){if(v===undefined)delete process.env[k];else process.env[k]=v}
   }
 });

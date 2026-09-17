@@ -32,13 +32,12 @@ mv -f "$dest/codex-sync.new" "$dest/codex-sync"
 if [[ ! -e "$config/connection.json" ]]; then
   echo 'First confirm Pro works. Exit Codex before the first sync.'
   read -r -p 'Cloud HTTPS URL (Vercel or Cloudflare): ' url </dev/tty
-  read -r -p 'Read username: ' username </dev/tty
-  read -r -s -p 'Read password: ' password </dev/tty; echo
+  read -r -s -p 'Cloud ACCESS_KEY (32+ characters): ' access_key </dev/tty; echo
   read -r -p "Codex directory [${CODEX_HOME:-$HOME/.codex}]: " codex_dir </dev/tty
   codex_dir="${codex_dir:-${CODEX_HOME:-$HOME/.codex}}"
   command -v python3 >/dev/null || { echo 'Python 3 required only for initial secure JSON setup.'; exit 1; }
-  printf '%s\0%s\0%s\0%s' "$url" "$username" "$password" "$codex_dir" | python3 -c 'import json,sys,os; data=sys.stdin.buffer.read().decode().split("\0"); p=sys.argv[1]; fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); f=os.fdopen(fd,"w"); json.dump(dict(zip(["url","username","password","codex_home"],data)),f); f.close()' "$config/connection.json"
-  unset password
+  printf '%s\0%s\0%s' "$url" "$access_key" "$codex_dir" | python3 -c 'import json,sys,os; data=sys.stdin.buffer.read().decode().split("\0"); p=sys.argv[1]; fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); f=os.fdopen(fd,"w"); json.dump(dict(zip(["url","access_key","codex_home"],data)),f); f.close()' "$config/connection.json"
+  unset access_key
   [[ -d "$codex_dir" && ! -L "$codex_dir" && ! -L "$codex_dir/config.toml" ]] || { echo 'Initialize Pro in a normal directory first'; exit 1; }
   chmod 700 "$codex_dir"
   [[ ! -e "$codex_dir/config.toml" ]] || chmod 600 "$codex_dir/config.toml"
