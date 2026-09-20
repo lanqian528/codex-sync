@@ -12,7 +12,7 @@
 - 客户端以 `Authorization: Bearer <ACCESS_KEY>` 请求 `/config.json`，URL 不含密钥。
 - `/api/admin` 读写接口同样要求认证；Cookie 写请求还检查同源和 CSRF。读取管理配置只返回 Key 是否存在，不回显已保存的 API Key。
 - 未认证返回 401；未设置有效 ACCESS_KEY 返回 503。所有配置和错误响应禁止缓存。登录页静态内容可以公开访问，但里面没有密钥或业务配置。
-- 私有存储只保存一个 `config.json`，内容恰好是 `mode`、`base_url`、`api_key`。不是公开 Blob，没有公开下载权限。Vercel 使用 `useCache: false` 读取源站；Cloudflare 使用私有 R2。
+- 私有存储只保存一个 `config.json`，内容恰好是 `mode`、`base_url`、`api_key`。不是公开 Blob，没有公开下载权限。Vercel 的设备轮询使用 Blob 私有缓存，管理页和保存前检查仍以 `useCache: false` 读取源站；Cloudflare 使用私有 R2。对外配置接口始终认证且 `no-store`。
 - 保存先校验，再条件替换；冲突返回 409，要求重新读取，防止旧页面覆盖新配置。网络中断可能导致保存结果不确定，页面会要求重新读取，不虚报成功。
 
 示例 JSON（真实值不要提交 Git）：
@@ -44,6 +44,16 @@ npx vercel@latest --prod
 已有私有存储时连接它即可，不要重复创建。只把存储连接到需要的环境，不要让测试部署用弱测试密钥连接真实配置存储。私有存储不是内存或 `/tmp` 文件，重新部署、函数重启后配置仍保留。
 
 设置或轮换 ACCESS_KEY 后需要重新部署；页面修改业务配置不需要。Vercel 旧部署可能保留旧环境变量且仍能访问共享存储，**轮换密钥后应删除旧部署或通过平台限制其访问，并替换所有客户端密钥**。使用稳定生产域名，不要给客户端填写受 Vercel 登录保护的 Preview 地址。域名可达性需在目标设备网络实测。
+
+### Vercel 免费额度优化
+
+每台设备每分钟直接回源一次，按 30 天计约 43,200 次 Blob 读取，超过 Hobby 的 10,000 次 Simple Operations。因此设备轮询默认走 Blob 的**私有**缓存；写入时设置一小时缓存，函数固定在 iad1，避免不同设备分别打到多个源站缓存区域。
+
+缓存命中不计 Simple Operations。按一个缓存节点持续命中估算，定时刷新约为每月 720 次，再加管理页直读、修改后的缓存刷新和缓存提前失效；这不是用量硬上限。函数调用和 Edge Requests 仍按设备轮询次数累计，免费额度也与同账号其他项目共享。
+
+覆盖配置后 Blob 会刷新其缓存，传播可能约 60 秒，叠加客户端轮询后通常约 1–2 分钟跟随；管理页直接读取最新值。不会把带密钥的 HTTP 响应开放为公共 CDN 缓存。已有旧部署的用户需在更新后原样保存一次配置，使既有 Blob 的缓存时长从旧值升级到一小时。
+
+依据：[Blob 计费](https://vercel.com/docs/vercel-blob/usage-and-pricing)、[私有 Blob 的缓存一致性](https://vercel.com/changelog/vercel-blob-now-supports-consistent-reads-on-private-storage)。
 
 ## 部署 Cloudflare
 

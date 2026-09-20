@@ -13,7 +13,8 @@ test('Vercel routes forward bodies, cookies, auth and conditional writes', async
   const key='fake-access-key-for-tests-only-123456789';
   process.env.ACCESS_KEY=key; process.env.BLOB_STORE_ID='fake'; delete process.env.CLOUD_CONFIG;
   let saved=null;
-  store.read=async()=>saved;
+  const reads=[];
+  store.read=async options=>{reads.push(options);return saved};
   store.write=async config=>{saved={config,etag:'"one"'};return saved.etag};
   const req=(path,method='GET',body,headers={})=>new Request('https://example.vercel.app'+path,{method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json',...headers},...(body?{body:JSON.stringify(body)}:{})});
   try{
@@ -21,9 +22,15 @@ test('Vercel routes forward bodies, cookies, auth and conditional writes', async
     assert.equal(login.status,200);assert.match(login.headers.get('set-cookie'),/HttpOnly/);
     const res=await admin.fetch(req('/api/admin','PUT',{mode:'api',base_url:'https://api.example.com/v1',api_key:'fake-key'},{'X-Config-Revision':'initial'}));
     assert.equal(res.status,200);
+    assert.equal(reads.at(-1),undefined, 'save checks the latest origin value');
     const read=await endpoint.fetch(req('/config.json'));
     assert.equal((await read.json()).api_key,'fake-key');assert.match(read.headers.get('Vercel-CDN-Cache-Control'),/no-store/);
+    assert.deepEqual(reads.at(-1),{useCache:true}, 'device polls use the private Blob cache');
+    await admin.fetch(req('/api/admin'));
+    assert.equal(reads.at(-1),undefined, 'admin view bypasses the Blob cache');
+    const count=reads.length;
     assert.equal((await endpoint.fetch(req('/config.json','GET',null,{Authorization:''}))).status,401);
+    assert.equal(reads.length,count,'unauthenticated requests never access storage');
   }finally{
     store.read=oldRead;store.write=oldWrite;
     for(const[k,v]of Object.entries(previous)){if(v===undefined)delete process.env[k];else process.env[k]=v}
